@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "app/api/translation-sources/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/serp-real/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/perplexity/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/openai/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}
