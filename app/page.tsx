@@ -1005,14 +1005,14 @@ export default function Home() {
                 }
               });
               
-              const finalStatus = hasManualReviewNeeded ? 'manual_review' : 'completed';
+              const finalStatus = hasManualReviewNeeded ? 'manual_review' as const : 'completed' as const;
               const statusMessage = hasManualReviewNeeded 
                 ? `⚠️ ${poi.name} 需要人工檢查 - 部分翻譯不一致`
                 : `🎉 ${poi.name} 所有語言翻譯完成！`;
               
               addProgressLog(statusMessage);
               
-              return { ...result, status: finalStatus as const };
+              return { ...result, status: finalStatus };
             }
             return result;
           })
