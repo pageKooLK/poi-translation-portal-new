@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Version B - Modern Google SERP with Tools</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: Roboto,arial,sans-serif; 
+            font-size: 14px; 
+            margin: 0; 
+            background: #fff; 
+            color: #202124;
+        }
+        .header { 
+            padding: 6px 0;
+            border-bottom: 1px solid #dadce0;
+            background: #fff;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+        .logo { 
+            color: #4285f4; 
+            font-size: 20px; 
+            text-decoration: none;
+        }
+        .search-container {
+            flex: 1;
+            max-width: 584px;
+            position: relative;
+        }
+        .search-input {
+            width: 100%;
+            height: 44px;
+            padding: 0 46px 0 16px;
+            border: 1px solid #dfe1e5;
+            border-radius: 24px;
+            font-size: 16px;
+            outline: none;
+            box-shadow: 0 1px 6px rgba(32,33,36,.28);
+        }
+        .search-tools {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+        .tools-btn {
+            padding: 8px 16px;
+            border: 1px solid #dadce0;
+            border-radius: 4px;
+            background: #f8f9fa;
+            color: #3c4043;
+            text-decoration: none;
+            font-size: 13px;
+        }
+        .nav-bar {
+            border-bottom: 1px solid #dadce0;
+            padding: 12px 0 0;
+        }
+        .nav-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        .nav-tabs {
+            display: flex;
+            gap: 32px;
+        }
+        .nav-tab {
+            padding: 12px 0;
+            color: #5f6368;
+            text-decoration: none;
+            font-size: 13px;
+            position: relative;
+        }
+        .nav-tab.active {
+            color: #1a73e8;
+            font-weight: 500;
+        }
+        .nav-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: #1a73e8;
+            border-radius: 2px 2px 0 0;
+        }
+        .main {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            display: flex;
+            gap: 40px;
+        }
+        .results {
+            flex: 1;
+            max-width: 652px;
+        }
+        .results-stats {
+            color: #70757a;
+            font-size: 13px;
+            margin-bottom: 20px;
+        }
+        .search-result {
+            margin-bottom: 28px;
+        }
+        .result-header {
+            margin-bottom: 4px;
+        }
+        .result-url {
+            color: #202124;
+            font-size: 14px;
+            line-height: 20px;
+        }
+        .result-title {
+            margin: 4px 0 8px 0;
+            font-size: 20px;
+            line-height: 26px;
+        }
+        .result-title a {
+            color: #1a0dab;
+            text-decoration: none;
+        }
+        .result-title a:hover {
+            text-decoration: underline;
+        }
+        .result-snippet {
+            color: #4d5156;
+            font-size: 14px;
+            line-height: 22px;
+        }
+        .sidebar {
+            width: 350px;
+        }
+        .info-panel {
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            background: #fff;
+            overflow: hidden;
+        }
+        .info-header {
+            padding: 16px 16px 12px;
+        }
+        .info-title {
+            font-size: 22px;
+            font-weight: 400;
+            color: #202124;
+            margin: 0 0 4px 0;
+        }
+        .info-subtitle {
+            color: #70757a;
+            font-size: 14px;
+        }
+        .info-content {
+            padding: 0 16px 16px;
+        }
+        .info-item {
+            margin-bottom: 12px;
+            display: flex;
+            font-size: 14px;
+        }
+        .info-label {
+            color: #70757a;
+            min-width: 80px;
+            margin-right: 16px;
+        }
+        .info-value {
+            color: #202124;
+            flex: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-inner">
+            <a href="#" class="logo">Google</a>
+            <div class="search-container">
+                <input type="text" class="search-input" value="Zoo Aquarium de Madrid" readonly>
+            </div>
+            <div class="search-tools">
+                <a href="#" class="tools-btn">Tools</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="nav-bar">
+        <div class="nav-inner">
+            <div class="nav-tabs">
+                <a href="#" class="nav-tab active">All</a>
+                <a href="#" class="nav-tab">Images</a>
+                <a href="#" class="nav-tab">Videos</a>
+                <a href="#" class="nav-tab">News</a>
+                <a href="#" class="nav-tab">Maps</a>
+                <a href="#" class="nav-tab">More</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="results">
+            <div class="results-stats">About 567,234 results (0.28 seconds)</div>
+
+            <div class="search-result">
+                <div class="result-header">
+                    <div class="result-url">https://www.zooaquarium.com › madrid</div>
+                </div>
+                <h3 class="result-title">
+                    <a href="https://www.zooaquarium.com/madrid">Zoo Aquarium de Madrid - Official Website</a>
+                </h3>
+                <div class="result-snippet">
+                    Visit Zoo Aquarium de Madrid in Madrid, Spain. One of the most popular tourist attractions with thousands of visitors every year. Book tickets online and save up to 15%. Opening hours: 10:30 AM - 8:00 PM daily.
+                </div>
+            </div>
+
+            <div class="search-result">
+                <div class="result-header">
+                    <div class="result-url">https://www.tripadvisor.com › Attraction_Review › Madrid</div>
+                </div>
+                <h3 class="result-title">
+                    <a href="https://www.tripadvisor.com/attraction">Zoo Aquarium de Madrid - TripAdvisor</a>
+                </h3>
+                <div class="result-snippet">
+                    Zoo Aquarium de Madrid: See 3,847 reviews, articles, and 2,156 photos of Zoo Aquarium de Madrid, ranked No.15 on TripAdvisor among 427 attractions in Madrid. "Great day out for families"
+                </div>
+            </div>
+
+            <div class="search-result">
+                <div class="result-header">
+                    <div class="result-url">https://en.wikipedia.org › wiki › Madrid_Zoo</div>
+                </div>
+                <h3 class="result-title">
+                    <a href="https://en.wikipedia.org/wiki/Madrid_Zoo">Zoo Aquarium de Madrid - Wikipedia</a>
+                </h3>
+                <div class="result-snippet">
+                    Zoo Aquarium de Madrid is a 20-hectare (49-acre) zoo and aquarium located in the Casa de Campo in Madrid, Spain. The zoo is home to over 6,000 animals of 500 different species.
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <div class="info-panel">
+                <div class="info-header">
+                    <h2 class="info-title">Zoo Aquarium de Madrid</h2>
+                    <div class="info-subtitle">Zoo and aquarium in Madrid, Spain</div>
+                </div>
+                <div class="info-content">
+                    <div class="info-item">
+                        <div class="info-label">Address</div>
+                        <div class="info-value">Casa de Campo, s/n, 28011 Madrid, Spain</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Hours</div>
+                        <div class="info-value">Open ⋅ Closes 8:00 PM</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Phone</div>
+                        <div class="info-value">+34 902 34 50 14</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Website</div>
+                        <div class="info-value"><a href="#" style="color: #1a0dab;">zooaquarium.com</a></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
