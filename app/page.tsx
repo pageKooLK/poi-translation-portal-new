@@ -849,8 +849,8 @@ export default function Home() {
           await new Promise(resolve => setTimeout(resolve, 100));
           
           // Create timeout promise for API call
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('API timeout')), 5000)
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('API timeout')), 35000)
           );
           
           // Create fetch promise
