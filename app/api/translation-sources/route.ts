@@ -23,53 +23,330 @@ const LANGUAGE_MAPPINGS: Record<string, {
   'PT-BR': { serpapi: 'pt', googleMaps: 'pt-BR', perplexity: 'Portuguese', openai: 'Portuguese' },
 };
 
-// Real SERP API function with timeout handling
+// Helper function: Get full language name for search queries
+function getLanguageFullName(language: string): string {
+  const languageNames: Record<string, string> = {
+    'ZH-CN': 'Chinese Simplified',
+    'ZH-TW': 'Chinese Traditional',
+    'JA-JP': 'Japanese',
+    'KO-KR': 'Korean',
+    'TH-TH': 'Thai',
+    'VI-VN': 'Vietnamese',
+    'ID-ID': 'Indonesian',
+    'MS-MY': 'Malay',
+    'EN-US': 'English',
+    'EN-GB': 'English',
+    'FR-FR': 'French',
+    'DE-DE': 'German',
+    'IT-IT': 'Italian',
+    'PT-BR': 'Portuguese'
+  };
+  return languageNames[language] || 'English';
+}
+
+// Helper function: Clean title by removing common website suffixes
+function cleanTitle(title: string): string {
+  let cleaned = title.trim();
+
+  // Remove common website suffixes (MUST be applied before splitting by " - ")
+  const suffixPatterns = [
+    /- Wikipedia.*$/i,
+    /- 维基百科.*$/,
+    /- 維基百科.*$/,
+    /，自由的百科全书$/,
+    /，自由的百科全書$/,
+    /\| Official Site.*$/i,
+    /- Official Website.*$/i,
+    /- TripAdvisor.*$/i,
+    /- Tripadvisor.*$/i,
+    /- Google Maps.*$/i,
+    /\| Booking\.com.*$/i,
+    /- Klook.*$/i,
+    /- 旅遊景點.*$/,
+    /- 旅游景点.*$/,
+    /- Tourist Attraction.*$/i,
+    /- Yelp.*$/i,
+    /\| Expedia.*$/i
+  ];
+
+  for (const pattern of suffixPatterns) {
+    cleaned = cleaned.replace(pattern, '');
+  }
+
+  // Clean up any remaining "- " at the end
+  cleaned = cleaned.replace(/\s*-\s*$/, '');
+
+  // If title still contains " - ", intelligently choose the best part
+  if (cleaned.includes(' - ')) {
+    const parts = cleaned.split(' - ').map(p => p.trim()).filter(p => p.length > 0);
+
+    if (parts.length === 2) {
+      // For two parts, prefer the one that looks more like a POI name
+      // Avoid parts that are too short (< 3 chars) or look like metadata
+      const part1 = parts[0];
+      const part2 = parts[1];
+
+      // If one part is very short (likely metadata), use the other
+      if (part1.length < 3 && part2.length >= 3) {
+        cleaned = part2;
+      } else if (part2.length < 3 && part1.length >= 3) {
+        cleaned = part1;
+      }
+      // If both are reasonable length, prefer the first (usually the POI name)
+      else {
+        cleaned = part1;
+      }
+    } else if (parts.length > 2) {
+      // For multiple parts, take the first reasonable one
+      cleaned = parts[0];
+    }
+  }
+
+  return cleaned.trim();
+}
+
+// Helper function: Evaluate translation quality with scoring system
+function evaluateTranslationQuality(result: any, poiName: string): number {
+  const title = result.title || '';
+  const link = result.link || '';
+  const snippet = result.snippet || '';
+  let score = 0;
+
+  // Negative scores: Avoid page titles that are not actual translations
+  if (title.toLowerCase().includes('translation of')) score -= 100;
+  if (title.toLowerCase().includes('translate')) score -= 50;
+  if (title.match(/[英中中英日英]/)) score -= 50;
+  if (title.toLowerCase().includes('linguee')) score -= 50;
+  if (title.toLowerCase().includes('dictionary')) score -= 30;
+
+  // Penalize reviews and user-generated content (not reliable translations)
+  if (link.includes('tripadvisor.com/ShowUserReviews')) score -= 30;
+  if (link.includes('reddit.com')) score -= 20;
+  if (link.includes('/reviews/')) score -= 20;
+  if (title.toLowerCase().includes('review')) score -= 15;
+
+  // Heavily penalize news articles (not translations)
+  if (link.includes('/news/') || link.includes('/article/') || link.includes('/business/')) score -= 50;
+  if (link.includes('koreatimes.co') || link.includes('nytimes.com') || link.includes('bbc.com')) score -= 40;
+  if (title.toLowerCase().match(/\b(video|news|article|report|gov't|government)\b/)) score -= 30;
+
+  // Positive scores: Prefer high-quality sources
+  if (link.includes('wikipedia.org')) score += 40;
+  if (link.includes('namu.wiki')) score += 40; // Korean Wikipedia equivalent
+  if (link.includes('official') || title.toLowerCase().includes('official')) score += 30;
+  // Only give points for main TripAdvisor/Klook pages, not reviews
+  if ((link.includes('tripadvisor.') || link.includes('klook.com')) && !link.includes('ShowUserReviews')) score += 20;
+  if (snippet.toLowerCase().includes('official name')) score += 10;
+
+  // Relevance check: penalize results that don't seem related to the POI
+  const cleanedTitle = cleanTitle(title);
+
+  // Check if cleaned title contains any word from original POI name (basic relevance)
+  const poiWords = poiName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const titleLower = cleanedTitle.toLowerCase();
+  const hasRelevantWord = poiWords.some(word => titleLower.includes(word));
+
+  // If no relevant words found, heavily penalize (likely unrelated result)
+  if (!hasRelevantWord && cleanedTitle !== poiName) {
+    score -= 50;
+  }
+
+  // Title length considerations
+  if (cleanedTitle.length > 0 && cleanedTitle.length < 50) score += 10;
+  if (title.length > 100) score -= 20;
+
+  // Name format check: Prefer titles without too many special characters
+  const specialCharCount = (title.match(/[:|\/\(\)\[\]]/g) || []).length;
+  if (specialCharCount === 0) score += 15;
+  if (specialCharCount > 3) score -= 10;
+
+  return score;
+}
+
+// Helper function: Extract best translation from candidates
+function extractBestTranslation(candidates: Array<{translation: string, score: number}>): string | null {
+  // Filter out candidates with negative scores (降級策略 B)
+  const validCandidates = candidates.filter(c => c.score > 0);
+
+  if (validCandidates.length === 0) {
+    return null; // Return "Translation not found"
+  }
+
+  // Sort by score (descending) and return the best one
+  validCandidates.sort((a, b) => b.score - a.score);
+  return validCandidates[0].translation;
+}
+
+// Real SERP API function with improved 3-layer translation extraction
 async function fetchSerpTranslation(poiName: string, googlePlaceId: string, language: string): Promise<string> {
+  console.log(`🔵 SERP API: Starting translation for "${poiName}" to ${language}`);
   try {
     const langCode = LANGUAGE_MAPPINGS[language]?.serpapi || 'en';
-    
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('SERP API timeout')), 3000)
+    const languageFullName = getLanguageFullName(language);
+    console.log(`   Language code: ${langCode}`);
+    console.log(`   Language full name: ${languageFullName}`);
+    console.log(`   API Key available: ${process.env.SERP_API_KEY ? 'Yes' : 'No'}`);
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('SERP API timeout')), 5000) // Increased to 5s for better results
     );
-    
-    // Use SERP API to search for translations
-    const searchQuery = `"${poiName}" translate ${language}`;
-    const fetchPromise = fetch(`https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${process.env.SERP_API_KEY}&hl=${langCode}&gl=${langCode.split('-')[0]}`);
-    
+
+    // Improved search query: "POI name" in [Language]
+    const searchQuery = `"${poiName}" in ${languageFullName}`;
+
+    // Map language codes to valid SERP API country codes
+    const countryCodeMap: Record<string, string> = {
+      'zh-cn': 'cn',
+      'zh-tw': 'tw',
+      'ja': 'jp',
+      'ko': 'kr',
+      'th': 'th',
+      'vi': 'vn',
+      'id': 'id',
+      'ms': 'my',
+      'en': 'us',
+      'fr': 'fr',
+      'de': 'de',
+      'it': 'it',
+      'pt': 'br'
+    };
+    const countryCode = countryCodeMap[langCode] || 'us';
+    const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${process.env.SERP_API_KEY}&hl=${langCode}&gl=${countryCode}`;
+    console.log(`   Search query: ${searchQuery}`);
+    console.log(`   Country code: ${countryCode}`);
+    console.log(`   Calling: ${url.replace(process.env.SERP_API_KEY || '', 'API_KEY_HIDDEN')}`);
+
+    const fetchPromise = fetch(url);
     const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
-    
+    console.log(`   Response status: ${response.status}`);
+
     if (!response.ok) {
-      throw new Error(`SERP API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`   ❌ SERP API HTTP error: ${response.status}`);
+      console.error(`   Error response: ${errorText}`);
+      throw new Error(`SERP API error: ${response.status} - ${errorText}`);
     }
-    
+
     const data = await response.json();
-    
-    // Extract translation from search results
-    let translatedText = poiName;
-    if (data.organic_results && data.organic_results.length > 0) {
-      // Look for translated names in titles and snippets
-      for (const result of data.organic_results.slice(0, 3)) {
-        const title = result.title || '';
-        const snippet = result.snippet || '';
-        const text = `${title} ${snippet}`.toLowerCase();
-        
-        // Simple heuristic to find translated names
-        if (text.includes(poiName.toLowerCase()) && title !== poiName) {
-          translatedText = title;
-          break;
+    console.log(`   Organic results found: ${data.organic_results?.length || 0}`);
+
+    // ============================================================================
+    // LAYER 1: Check Knowledge Graph (Highest Priority)
+    // ============================================================================
+    if (data.knowledge_graph) {
+      console.log(`   📚 Knowledge Graph found, checking for translation...`);
+
+      if (data.knowledge_graph.title && data.knowledge_graph.title !== poiName) {
+        const kgTitle = data.knowledge_graph.title;
+        console.log(`   ✅ Knowledge Graph title found: "${kgTitle}"`);
+        return kgTitle;
+      }
+
+      if (data.knowledge_graph.name && data.knowledge_graph.name !== poiName) {
+        const kgName = data.knowledge_graph.name;
+        console.log(`   ✅ Knowledge Graph name found: "${kgName}"`);
+        return kgName;
+      }
+
+      console.log(`   ℹ️ Knowledge Graph exists but no different translation found`);
+    }
+
+    // ============================================================================
+    // LAYER 2: Check Answer Box (Direct Translation Results)
+    // ============================================================================
+    if (data.answer_box) {
+      console.log(`   💬 Answer Box found, checking for translation...`);
+
+      // Check for translation result type with object structure
+      if (data.answer_box.type === 'translation_result') {
+        // Handle object structure: {source: {...}, target: {text: "翻譯"}}
+        if (data.answer_box.translation) {
+          let translation = data.answer_box.translation;
+
+          // If translation is an object with target.text, extract it
+          if (typeof translation === 'object' && translation.target && translation.target.text) {
+            translation = translation.target.text;
+          }
+          // If translation is an object with text property directly
+          else if (typeof translation === 'object' && translation.text) {
+            translation = translation.text;
+          }
+
+          if (typeof translation === 'string' && translation !== poiName) {
+            console.log(`   ✅ Answer Box translation found: "${translation}"`);
+            return translation;
+          }
         }
       }
+
+      // Some answer boxes have the translation in "answer" field
+      if (data.answer_box.answer && typeof data.answer_box.answer === 'string' && data.answer_box.answer !== poiName) {
+        const answer = data.answer_box.answer;
+        console.log(`   ✅ Answer Box answer found: "${answer}"`);
+        return answer;
+      }
+
+      console.log(`   ℹ️ Answer Box exists but no usable translation found`);
     }
-    
-    const finalTranslation = translatedText === poiName ? generateMockTranslation(poiName, langCode, 'SERP') : translatedText;
-    
-    console.log(`[DEBUG] Real SERP translation for ${poiName} -> ${language}: ${finalTranslation}`);
-    return finalTranslation;
+
+    // ============================================================================
+    // LAYER 3: Intelligent Organic Results Analysis
+    // ============================================================================
+    if (data.organic_results && data.organic_results.length > 0) {
+      console.log(`   🔍 Analyzing top 5 organic search results...`);
+
+      const candidates: Array<{translation: string, score: number, source: string}> = [];
+
+      // Analyze top 5 results (increased from 3)
+      for (let i = 0; i < Math.min(5, data.organic_results.length); i++) {
+        const result = data.organic_results[i];
+        const title = result.title || '';
+        const link = result.link || '';
+
+        // Evaluate quality
+        const score = evaluateTranslationQuality(result, poiName);
+        const cleanedTitle = cleanTitle(title);
+
+        console.log(`   [${i + 1}] Title: "${title}"`);
+        console.log(`       Cleaned: "${cleanedTitle}"`);
+        console.log(`       Source: ${link}`);
+        console.log(`       Score: ${score}`);
+
+        // Skip results where title equals POI name (no translation found)
+        if (cleanedTitle === poiName) {
+          console.log(`       ℹ️ Title same as POI name, skipping (no translation in title)`);
+          continue;
+        }
+
+        if (cleanedTitle && cleanedTitle !== poiName && cleanedTitle.length > 0) {
+          candidates.push({
+            translation: cleanedTitle,
+            score: score,
+            source: link
+          });
+        }
+      }
+
+      // Extract best translation from candidates
+      const bestTranslation = extractBestTranslation(candidates);
+
+      if (bestTranslation) {
+        const bestCandidate = candidates.find(c => c.translation === bestTranslation);
+        console.log(`   ✅ Best translation selected: "${bestTranslation}"`);
+        console.log(`      Score: ${bestCandidate?.score}, Source: ${bestCandidate?.source}`);
+        return bestTranslation;
+      } else {
+        console.log(`   ⚠️ No valid translation found (all candidates scored ≤ 0)`);
+      }
+    }
+
+    // No translation found through any method
+    console.log(`   ❌ Translation not found through any method`);
+    return "Translation not found";
+
   } catch (error) {
-    console.error('SERP API error:', error);
-    // Fallback to mock on error
-    const langCode = LANGUAGE_MAPPINGS[language]?.serpapi || 'en';
-    return generateMockTranslation(poiName, langCode, 'SERP');
+    console.error(`   ❌ SERP API error:`, error);
+    return "Translation failed";
   }
 }
 
@@ -286,13 +563,16 @@ function generateMockTranslation(poiName: string, langCode: string, source: stri
 
 // Real Google Places API function using Text Search
 async function fetchGoogleMapsTranslation(poiName: string, googlePlaceId: string, language: string): Promise<string> {
+  console.log(`🟢 Google Maps API: Starting translation for "${poiName}" to ${language}`);
   try {
     const langCode = LANGUAGE_MAPPINGS[language]?.googleMaps || 'en';
-    
-    const timeoutPromise = new Promise((_, reject) => 
+    console.log(`   Language code: ${langCode}`);
+    console.log(`   API Key available: ${process.env.GOOGLE_MAPS_API_KEY ? 'Yes' : 'No'}`);
+
+    const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Google Places API timeout')), 5000)
     );
-    
+
     // Use Google Places API Text Search to get POI in target language
     const requestBody = {
       textQuery: poiName,
@@ -300,7 +580,8 @@ async function fetchGoogleMapsTranslation(poiName: string, googlePlaceId: string
       maxResultCount: 5,
       includedType: 'tourist_attraction'
     };
-    
+    console.log(`   Request body:`, JSON.stringify(requestBody, null, 2));
+
     const fetchPromise = fetch('https://places.googleapis.com/v1/places:searchText', {
       method: 'POST',
       headers: {
@@ -310,175 +591,229 @@ async function fetchGoogleMapsTranslation(poiName: string, googlePlaceId: string
       },
       body: JSON.stringify(requestBody)
     });
-    
+
     const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
-    
+    console.log(`   Response status: ${response.status}`);
+
     if (!response.ok) {
-      throw new Error(`Google Places API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`   ❌ Google Places API HTTP error: ${response.status}`);
+      console.error(`   Error response: ${errorText}`);
+      throw new Error(`Google Places API error: ${response.status} - ${errorText}`);
     }
-    
+
     const data = await response.json();
-    
+    console.log(`   Places found: ${data.places?.length || 0}`);
+
     // Extract translated name from the response
     let translatedText = poiName;
     if (data.places && data.places.length > 0) {
       // Look for exact match by place ID first, then by similarity
       let bestMatch = null;
-      
+
       if (googlePlaceId) {
         bestMatch = data.places.find((place: any) => place.id === googlePlaceId);
+        console.log(`   Searched for place ID: ${googlePlaceId}, Found: ${bestMatch ? 'Yes' : 'No'}`);
       }
-      
+
       // If no exact ID match, use first result (Google's best match)
       if (!bestMatch && data.places.length > 0) {
         bestMatch = data.places[0];
+        console.log(`   Using first result as best match`);
       }
-      
+
       if (bestMatch && bestMatch.displayName && bestMatch.displayName.text) {
         translatedText = bestMatch.displayName.text;
+        console.log(`   Found translation: ${translatedText}`);
       }
     }
-    
-    const finalTranslation = translatedText === poiName ? 
-      `${poiName} (Google Maps)` : 
+
+    const finalTranslation = translatedText === poiName ?
+      "Translation not found" :
       translatedText;
-    
-    console.log(`[DEBUG] Real Google Maps translation for ${poiName} -> ${language}: ${finalTranslation}`);
+
+    console.log(`   ✅ Google Maps result: ${finalTranslation}`);
     return finalTranslation;
   } catch (error) {
-    console.error('Google Places API error:', error);
-    // Fallback to mock on error
-    const langCode = LANGUAGE_MAPPINGS[language]?.googleMaps || 'en';
-    return generateMockTranslation(poiName, langCode === 'pt-BR' ? 'pt' : langCode, 'Google Maps');
+    console.error(`   ❌ Google Maps API error:`, error);
+    return "Translation failed";
   }
 }
 
 // Real Perplexity API function with timeout handling
 async function fetchPerplexityTranslation(poiName: string, googlePlaceId: string, language: string): Promise<string> {
+  console.log(`🟣 Perplexity API: Starting translation for "${poiName}" to ${language}`);
   try {
     const langName = LANGUAGE_MAPPINGS[language]?.perplexity || 'English';
-    const langCode = LANGUAGE_MAPPINGS[language]?.perplexity || 'en';
-    
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Perplexity API timeout')), 3000)
+    console.log(`   Language name: ${langName}`);
+    console.log(`   API Key available: ${process.env.PERPLEXITY_API_KEY ? 'Yes' : 'No'}`);
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Perplexity API timeout')), 10000)  // Increased to 10s for sonar model
     );
-    
+
+    const requestBody = {
+      model: "sonar",  // Updated to current Perplexity API model (previously llama-3.1-sonar-small-128k-online)
+      messages: [{
+        role: "system",
+        content: "You are a translator API. Output format: translation only, no explanations."
+      }, {
+        role: "user",
+        content: `"${poiName}" in ${langName}:`
+      }],
+      max_tokens: 15,  // Keep it short to force concise responses
+      temperature: 0  // Use deterministic output
+    };
+    console.log(`   Request model: ${requestBody.model}`);
+
     const fetchPromise = fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.PERPLEXITY_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model: "llama-3.1-sonar-small-128k-online",
-        messages: [{
-          role: "user",
-          content: `Translate the POI name "${poiName}" to ${langName}. For Chinese, preserve proper spacing where appropriate (e.g., "ZooTampa at Lowry Park" should become "ZooTampa at Lowry 公園" not "ZootampaAtLowry公園"). Return ONLY the translated name, no explanation.`
-        }],
-        max_tokens: 50
-      })
+      body: JSON.stringify(requestBody)
     });
-    
+
     const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
-    
+    console.log(`   Response status: ${response.status}`);
+
     if (!response.ok) {
-      throw new Error(`Perplexity API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`   ❌ Perplexity API HTTP error: ${response.status}`);
+      console.error(`   Error response: ${errorText}`);
+      throw new Error(`Perplexity API error: ${response.status} - ${errorText}`);
     }
-    
+
     const data = await response.json();
-    const translatedText = data.choices[0]?.message?.content?.trim() || generateMockTranslation(poiName, langCode, 'Perplexity');
-    
-    console.log(`[DEBUG] Real Perplexity translation for ${poiName} -> ${language}: ${translatedText}`);
+    let translatedText = data.choices[0]?.message?.content?.trim() || "Translation failed";
+
+    // Clean up Perplexity's verbose responses
+    // Remove common patterns like "The translation is...", "**Text**", etc.
+    translatedText = translatedText
+      .replace(/^The .* translation (?:of|is) .*?(?:is|:)\s*/i, '')  // Remove "The French translation of X is"
+      .replace(/^\*\*.*?\*\*:?\s*/g, '')  // Remove **Bold text:** at start
+      .replace(/\*\*/g, '')  // Remove remaining ** markdown bold
+      .replace(/^Translation:\s*/i, '')  // Remove "Translation:" prefix
+      .replace(/^Answer:\s*/i, '')  // Remove "Answer:" prefix
+      .replace(/["""]/g, '"')  // Normalize quotes
+      .trim();
+
+    // Extract translation from explanatory sentences
+    // Pattern: "X" en français se traduit par "Y" → Y
+    // Pattern: "X" in Language is "Y" → Y
+    const extractPatterns = [
+      /se traduit par [""](.+?)[""]$/i,  // French: se traduit par "translation"
+      /wird übersetzt als [""](.+?)[""]$/i,  // German: wird übersetzt als "translation"
+      /si traduce come [""](.+?)[""]$/i,  // Italian: si traduce come "translation"
+      /traduz-se como [""](.+?)[""]$/i,  // Portuguese: traduz-se como "translation"
+      /in .+ is [""]?(.+?)[""]?(?:\s+or\s+|\s*$)/i,  // English: in Language is "translation" or "alt"
+      /in .+ is ([^\s"]+)/i,  // English: in Language is translation (no quotes)
+    ];
+
+    for (const pattern of extractPatterns) {
+      const match = translatedText.match(pattern);
+      if (match && match[1]) {
+        translatedText = match[1].trim();
+        break;
+      }
+    }
+
+    // Additional cleanup: if still contains explanatory text at the start, try to extract just the translation
+    if (translatedText.toLowerCase().includes(' in ') && translatedText.toLowerCase().includes(' is ')) {
+      // Try to extract the translation part after "is"
+      const simpleMatch = translatedText.match(/is\s+(.+?)(?:\s+or\s+|\s*\(|$)/i);
+      if (simpleMatch && simpleMatch[1]) {
+        translatedText = simpleMatch[1].replace(/["""]/g, '').trim();
+      }
+    }
+
+    // Remove incomplete parentheses and common annotations that may be truncated
+    translatedText = translatedText
+      .replace(/\s*\([^)]*$/g, '')  // Remove unclosed parentheses at the end (e.g., " (pinyin: Dōn")
+      .replace(/\s*\(pinyin:.*?\)/gi, '')  // Remove pinyin annotations
+      .replace(/\s*\(traditional.*?\)/gi, '')  // Remove traditional/simplified annotations
+      .replace(/\s*\(simplified.*?\)/gi, '')
+      .trim();
+
+    console.log(`   ✅ Perplexity result: ${translatedText}`);
     return translatedText;
   } catch (error) {
-    console.error('Perplexity API error:', error);
-    // Fallback to mock on error
-    const langCodeMap: Record<string, string> = {
-      'Chinese': 'zh-cn',
-      'Chinese Traditional': 'zh-tw',
-      'Japanese': 'ja',
-      'Korean': 'ko',
-      'Thai': 'th',
-      'Vietnamese': 'vi',
-      'Indonesian': 'id',
-      'Malay': 'ms',
-      'French': 'fr',
-      'German': 'de',
-      'Italian': 'it',
-      'Portuguese': 'pt',
-      'English': 'en'
-    };
-    
-    const langCode = langCodeMap[LANGUAGE_MAPPINGS[language]?.perplexity || 'English'] || 'en';
-    return generateMockTranslation(poiName, langCode, 'Perplexity');
+    console.error(`   ❌ Perplexity API error:`, error);
+    return "Translation failed";
   }
 }
 
 // Real OpenAI API function with timeout handling
 async function fetchOpenAITranslation(poiName: string, googlePlaceId: string, language: string): Promise<string> {
+  console.log(`🟠 OpenAI API: Starting translation for "${poiName}" to ${language}`);
   try {
     const langName = LANGUAGE_MAPPINGS[language]?.openai || 'English';
-    
-    const timeoutPromise = new Promise((_, reject) => 
+    console.log(`   Language name: ${langName}`);
+    console.log(`   API Key available: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
+
+    const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('OpenAI API timeout')), 3000)
     );
-    
+
+    const requestBody = {
+      model: "gpt-3.5-turbo",
+      messages: [{
+        role: "user",
+        content: `Translate the POI name "${poiName}" to ${langName}. For Chinese, preserve proper spacing where appropriate (e.g., "ZooTampa at Lowry Park" should become "ZooTampa at Lowry 公園" not "ZootampaAtLowry公園"). Return ONLY the translated name, no explanation.`
+      }],
+      max_tokens: 50
+    };
+    console.log(`   Request model: ${requestBody.model}`);
+
     const fetchPromise = fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        messages: [{
-          role: "user",
-          content: `Translate the POI name "${poiName}" to ${langName}. For Chinese, preserve proper spacing where appropriate (e.g., "ZooTampa at Lowry Park" should become "ZooTampa at Lowry 公園" not "ZootampaAtLowry公園"). Return ONLY the translated name, no explanation.`
-        }],
-        max_tokens: 50
-      })
+      body: JSON.stringify(requestBody)
     });
-    
+
     const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
-    
+    console.log(`   Response status: ${response.status}`);
+
     if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`   ❌ OpenAI API HTTP error: ${response.status}`);
+      console.error(`   Error response: ${errorText}`);
+      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
     }
-    
+
     const data = await response.json();
-    const translatedText = data.choices[0]?.message?.content?.trim() || `${poiName} (OpenAI)`;
-    
-    console.log(`[DEBUG] Real OpenAI translation for ${poiName} -> ${language}: ${translatedText}`);
+    const translatedText = data.choices[0]?.message?.content?.trim() || "Translation failed";
+    console.log(`   ✅ OpenAI result: ${translatedText}`);
     return translatedText;
   } catch (error) {
-    console.error('OpenAI API error:', error);
-    // Fallback to mock on error
-    const langCodeMap: Record<string, string> = {
-      'Chinese Simplified': 'zh-cn',
-      'Chinese Traditional': 'zh-tw',
-      'Japanese': 'ja',
-      'Korean': 'ko',
-      'Thai': 'th',
-      'Vietnamese': 'vi',
-      'Indonesian': 'id',
-      'Malay': 'ms',
-      'French': 'fr',
-      'German': 'de',
-      'Italian': 'it',
-      'Portuguese': 'pt',
-      'English': 'en'
-    };
-    
-    const langCode = langCodeMap[LANGUAGE_MAPPINGS[language]?.openai || 'English'] || 'en';
-    return generateMockTranslation(poiName, langCode, 'OpenAI');
+    console.error(`   ❌ OpenAI API error:`, error);
+    return "Translation failed";
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const { poiName, googlePlaceId, language } = await request.json();
-    
+
+    console.log('='.repeat(80));
+    console.log('🚀 TRANSLATION REQUEST STARTED');
+    console.log('='.repeat(80));
+    console.log('📝 Request Details:');
+    console.log(`   POI Name: ${poiName}`);
+    console.log(`   Google Place ID: ${googlePlaceId}`);
+    console.log(`   Language: ${language}`);
+    console.log(`   Timestamp: ${new Date().toISOString()}`);
+    console.log('-'.repeat(80));
+
     if (!poiName || !googlePlaceId || !language) {
+      console.error('❌ ERROR: Missing required fields');
+      console.error(`   poiName: ${poiName ? '✓' : '✗'}`);
+      console.error(`   googlePlaceId: ${googlePlaceId ? '✓' : '✗'}`);
+      console.error(`   language: ${language ? '✓' : '✗'}`);
       return NextResponse.json(
         { error: 'Missing required fields: poiName, googlePlaceId, language' },
         { status: 400 }
@@ -486,19 +821,52 @@ export async function POST(request: NextRequest) {
     }
 
     if (!LANGUAGE_MAPPINGS[language]) {
+      console.error(`❌ ERROR: Unsupported language: ${language}`);
+      console.error(`   Supported languages: ${Object.keys(LANGUAGE_MAPPINGS).join(', ')}`);
       return NextResponse.json(
         { error: `Unsupported language: ${language}` },
         { status: 400 }
       );
     }
 
+    console.log('✅ Validation passed');
+    console.log('🔑 Environment Variables Check:');
+    console.log(`   OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? '✓ Set' : '✗ Missing'}`);
+    console.log(`   PERPLEXITY_API_KEY: ${process.env.PERPLEXITY_API_KEY ? '✓ Set' : '✗ Missing'}`);
+    console.log(`   SERP_API_KEY: ${process.env.SERP_API_KEY ? '✓ Set' : '✗ Missing'}`);
+    console.log(`   GOOGLE_MAPS_API_KEY: ${process.env.GOOGLE_MAPS_API_KEY ? '✓ Set' : '✗ Missing'}`);
+    console.log('-'.repeat(80));
+    console.log('🌐 Starting parallel API calls...');
+
     // Fetch translations from all sources concurrently
+    const startTime = Date.now();
     const [serpTranslation, googleMapsTranslation, perplexityTranslation, openaiTranslation] = await Promise.allSettled([
       fetchSerpTranslation(poiName, googlePlaceId, language),
       fetchGoogleMapsTranslation(poiName, googlePlaceId, language),
       fetchPerplexityTranslation(poiName, googlePlaceId, language),
       fetchOpenAITranslation(poiName, googlePlaceId, language)
     ]);
+    const totalTime = Date.now() - startTime;
+
+    console.log('-'.repeat(80));
+    console.log('📊 API RESULTS SUMMARY:');
+    console.log(`   Total time: ${totalTime}ms`);
+    console.log('');
+    console.log('   1. SERP API:');
+    console.log(`      Status: ${serpTranslation.status === 'fulfilled' ? '✓ Success' : '✗ Failed'}`);
+    console.log(`      Result: ${serpTranslation.status === 'fulfilled' ? serpTranslation.value : (serpTranslation as PromiseRejectedResult).reason}`);
+    console.log('');
+    console.log('   2. Google Maps API:');
+    console.log(`      Status: ${googleMapsTranslation.status === 'fulfilled' ? '✓ Success' : '✗ Failed'}`);
+    console.log(`      Result: ${googleMapsTranslation.status === 'fulfilled' ? googleMapsTranslation.value : (googleMapsTranslation as PromiseRejectedResult).reason}`);
+    console.log('');
+    console.log('   3. Perplexity AI:');
+    console.log(`      Status: ${perplexityTranslation.status === 'fulfilled' ? '✓ Success' : '✗ Failed'}`);
+    console.log(`      Result: ${perplexityTranslation.status === 'fulfilled' ? perplexityTranslation.value : (perplexityTranslation as PromiseRejectedResult).reason}`);
+    console.log('');
+    console.log('   4. OpenAI:');
+    console.log(`      Status: ${openaiTranslation.status === 'fulfilled' ? '✓ Success' : '✗ Failed'}`);
+    console.log(`      Result: ${openaiTranslation.status === 'fulfilled' ? openaiTranslation.value : (openaiTranslation as PromiseRejectedResult).reason}`);
 
     const translations = {
       serp: serpTranslation.status === 'fulfilled' ? serpTranslation.value : 'Translation failed',
@@ -530,9 +898,22 @@ export async function POST(request: NextRequest) {
       }
     };
 
+    console.log('-'.repeat(80));
+    console.log('✅ TRANSLATION REQUEST COMPLETED');
+    console.log(`   POI: ${poiName}`);
+    console.log(`   Language: ${language}`);
+    console.log(`   Total time: ${totalTime}ms`);
+    console.log(`   Successful translations: ${Object.values(translations).filter(t => t !== 'Translation failed').length}/4`);
+    console.log('='.repeat(80));
+    console.log('');
+
     return NextResponse.json(response);
   } catch (error) {
-    console.error('Translation sources API error:', error);
+    console.error('='.repeat(80));
+    console.error('❌ TRANSLATION REQUEST FAILED');
+    console.error('Error details:', error);
+    console.error('='.repeat(80));
+    console.error('');
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
