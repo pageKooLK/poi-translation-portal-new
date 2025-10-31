@@ -333,11 +333,116 @@ export default function Home() {
 
   // Load data from localStorage on component mount
   useEffect(() => {
-    const savedTranslationResults = loadFromLocalStorage('poi-translation-results');
-    if (savedTranslationResults && Array.isArray(savedTranslationResults)) {
-      console.log(`[DEBUG] Restoring ${savedTranslationResults.length} POIs from localStorage`);
-      setTranslationResults(savedTranslationResults);
-    }
+    // Load data from database on mount (hybrid approach: try database first, fallback to localStorage)
+    const loadInitialData = async () => {
+      try {
+        console.log('[DEBUG] Loading POIs and manual check queue from database...');
+
+        // Load POIs and manual check queue in parallel
+        const [poisResponse, queueResponse] = await Promise.all([
+          fetch('/api/pois'),
+          fetch('/api/manual-check-queue')
+        ]);
+
+        // Load manual check queue
+        if (queueResponse.ok) {
+          const { tasks } = await queueResponse.json();
+          console.log(`[DEBUG] Loaded ${tasks.length} manual check tasks from database`);
+          if (tasks && tasks.length > 0) {
+            setManualTasksState(tasks);
+          }
+        } else {
+          console.warn('[DEBUG] Failed to load manual check queue');
+        }
+
+        if (poisResponse.ok) {
+          const { pois } = await poisResponse.json();
+          console.log(`[DEBUG] Loaded ${pois.length} POIs from database`);
+
+          // Transform database POIs to frontend format
+          const transformedPois = pois.map((poi: any) => {
+            const translations: any = {};
+
+            // Initialize all languages
+            const allLanguages = ['ZH-CN', 'ZH-TW', 'JA-JP', 'KO-KR', 'TH-TH', 'VI-VN', 'ID-ID', 'MS-MY', 'EN-US', 'EN-GB', 'FR-FR', 'DE-DE', 'IT-IT', 'PT-BR'];
+            allLanguages.forEach(lang => {
+              translations[lang] = { text: null, status: 'pending' as const, progress: 0 };
+            });
+
+            // Fill in actual translations from database
+            if (poi.translations && Array.isArray(poi.translations)) {
+              poi.translations.forEach((translation: any) => {
+                const sources: any = {};
+                if (translation.translation_sources && Array.isArray(translation.translation_sources)) {
+                  translation.translation_sources.forEach((source: any) => {
+                    sources[source.source_type] = {
+                      text: source.recommended_name,
+                      reasoning: source.reasoning,
+                      confidence: source.confidence_score
+                    };
+                  });
+                }
+
+                translations[translation.language_code] = {
+                  text: translation.final_translation,
+                  status: translation.status || 'completed',
+                  progress: 100,
+                  sources: Object.keys(sources).length > 0 ? sources : undefined
+                };
+              });
+            }
+
+            // Determine overall POI status
+            const translationsList = Object.values(translations);
+            const hasManualReview = translationsList.some((t: any) => t.status === 'manual_review');
+            const hasProcessing = translationsList.some((t: any) => t.status === 'processing' || t.status === 'pending');
+            const allCompleted = translationsList.every((t: any) => t.status === 'completed');
+
+            let poiStatus: 'pending' | 'processing' | 'completed' | 'manual_review' = 'pending';
+            if (hasManualReview) poiStatus = 'manual_review';
+            else if (hasProcessing) poiStatus = 'processing';
+            else if (allCompleted) poiStatus = 'completed';
+
+            return {
+              id: Date.now() + Math.random(), // Generate local ID
+              klookId: poi.klook_poi_id,
+              name: poi.klook_poi_name,
+              country: poi.country,
+              status: poiStatus,
+              googlePlaceId: poi.google_place_id,
+              dbPoiId: poi.id,
+              translations,
+              createdAt: poi.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+              lastUpdated: poi.updated_at?.split('T')[0] || new Date().toISOString().split('T')[0]
+            };
+          });
+
+          if (transformedPois.length > 0) {
+            setTranslationResults(transformedPois);
+            console.log('[DEBUG] Database data loaded successfully');
+          } else {
+            // Fallback to localStorage if database is empty
+            const savedTranslationResults = loadFromLocalStorage('poi-translation-results');
+            if (savedTranslationResults && Array.isArray(savedTranslationResults)) {
+              console.log(`[DEBUG] Restoring ${savedTranslationResults.length} POIs from localStorage (fallback)`);
+              setTranslationResults(savedTranslationResults);
+            }
+          }
+        } else {
+          throw new Error('Failed to load from database');
+        }
+      } catch (error) {
+        console.error('[DEBUG] Error loading from database, falling back to localStorage:', error);
+        // Fallback to localStorage
+        const savedTranslationResults = loadFromLocalStorage('poi-translation-results');
+        if (savedTranslationResults && Array.isArray(savedTranslationResults)) {
+          console.log(`[DEBUG] Restoring ${savedTranslationResults.length} POIs from localStorage`);
+          setTranslationResults(savedTranslationResults);
+        }
+      }
+    };
+
+    loadInitialData();
   }, []);
 
   // Save translationResults to localStorage whenever it changes (with deduplication)
@@ -540,13 +645,29 @@ export default function Home() {
     setIsSubmitting(true);
     setSubmitStatus('idle');
     try {
-      // Here you would normally send to your API
-      console.log('Submitting POI:', poiForm);
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Create new POI object with initial translation structure
+      console.log('Submitting POI to database:', poiForm);
+
+      // Save POI to database first
+      const createResponse = await fetch('/api/pois', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          klookId: poiForm.klookId,
+          name: poiForm.name,
+          googlePlaceId: poiForm.googlePlaceId,
+          country: poiForm.country
+        })
+      });
+
+      if (!createResponse.ok) {
+        const errorData = await createResponse.json();
+        throw new Error(errorData.error || 'Failed to create POI');
+      }
+
+      const { poi: createdPoi } = await createResponse.json();
+      console.log('POI created in database:', createdPoi);
+
+      // Create local POI object with initial translation structure
       const newPOI = {
         id: Math.max(...translationResults.map(p => p.id), 0) + 1,
         klookId: poiForm.klookId,
@@ -554,7 +675,10 @@ export default function Home() {
         country: poiForm.country,
         status: 'processing' as const,
         googlePlaceId: poiForm.googlePlaceId,
+        dbPoiId: createdPoi.id, // Store database ID for later use
         translations: {
+          'ZH-CN': { text: null, status: 'processing' as const, progress: 0 },
+          'ZH-TW': { text: null, status: 'processing' as const, progress: 0 },
           'JA-JP': { text: null, status: 'processing' as const, progress: 0 },
           'KO-KR': { text: null, status: 'processing' as const, progress: 0 },
           'TH-TH': { text: null, status: 'processing' as const, progress: 0 },
@@ -574,9 +698,14 @@ export default function Home() {
 
       // Add new POI to translation results
       setTranslationResults(prevResults => [newPOI, ...prevResults]);
-      
+
       setSubmitStatus('success');
-      
+
+      // Start translation process for this POI
+      setTimeout(() => {
+        processTranslationsSequentially([newPOI]);
+      }, 500);
+
       // Reset form after a delay
       setTimeout(() => {
         setPoiForm({ klookId: '', name: '', googlePlaceId: '', country: '' });
@@ -672,55 +801,97 @@ export default function Home() {
       let errorCount = 0;
       const errors: string[] = [];
 
-      // First, create all POIs with pending status
+      // First, create all POIs with pending status and save to database
       const newPOIs: any[] = [];
       for (let i = 0; i < rows.length; i++) {
         try {
           const values = rows[i].split(',').map(v => v.trim());
           const rowData: any = {};
-          
+
           headers.forEach((header, index) => {
             rowData[header] = values[index] || '';
           });
 
-          // Create translation results for this POI with all languages pending initially
-          const newTranslationResult = {
-            id: Date.now() + i,
-            klookId: rowData.klook_id,
-            name: rowData.poi_name,
-            country: rowData.country_code,
-            status: 'pending' as const,
-            googlePlaceId: rowData.google_place_id,
-            translations: {
-              'ZH-CN': { text: null, status: 'pending' as const, progress: 0 },
-              'ZH-TW': { text: null, status: 'pending' as const, progress: 0 },
-              'JA-JP': { text: null, status: 'pending' as const, progress: 0 },
-              'KO-KR': { text: null, status: 'pending' as const, progress: 0 },
-              'TH-TH': { text: null, status: 'pending' as const, progress: 0 },
-              'VI-VN': { text: null, status: 'pending' as const, progress: 0 },
-              'ID-ID': { text: null, status: 'pending' as const, progress: 0 },
-              'MS-MY': { text: null, status: 'pending' as const, progress: 0 },
-              'EN-US': { text: null, status: 'pending' as const, progress: 0 },
-              'EN-GB': { text: null, status: 'pending' as const, progress: 0 },
-              'FR-FR': { text: null, status: 'pending' as const, progress: 0 },
-              'DE-DE': { text: null, status: 'pending' as const, progress: 0 },
-              'IT-IT': { text: null, status: 'pending' as const, progress: 0 },
-              'PT-BR': { text: null, status: 'pending' as const, progress: 0 }
-            },
-            createdAt: new Date().toISOString().split('T')[0],
-            lastUpdated: new Date().toISOString().split('T')[0]
-          };
+          // Check if POI already exists in current results
+          const existingPoi = translationResults.find(p => p.klookId === rowData.klook_id);
+          if (existingPoi) {
+            duplicateCount++;
+            errors.push(`第 ${i + 2} 行: Klook ID ${rowData.klook_id} 已存在`);
+            continue;
+          }
 
-          newPOIs.push(newTranslationResult);
-          successCount++;
-          
+          // Create POI in database first
+          try {
+            const createResponse = await fetch('/api/pois', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                klookId: rowData.klook_id,
+                name: rowData.poi_name,
+                googlePlaceId: rowData.google_place_id,
+                country: rowData.country_code
+              })
+            });
+
+            let dbPoiId = null;
+            if (createResponse.ok) {
+              const { poi: createdPoi } = await createResponse.json();
+              dbPoiId = createdPoi.id;
+            } else {
+              const errorData = await createResponse.json();
+              if (createResponse.status === 409) {
+                // POI already exists in database
+                duplicateCount++;
+                errors.push(`第 ${i + 2} 行: Klook ID ${rowData.klook_id} 已存在於資料庫`);
+                continue;
+              } else {
+                throw new Error(errorData.error || '建立 POI 失敗');
+              }
+            }
+
+            // Create translation results for this POI with all languages pending initially
+            const newTranslationResult = {
+              id: Date.now() + i,
+              klookId: rowData.klook_id,
+              name: rowData.poi_name,
+              country: rowData.country_code,
+              status: 'pending' as const,
+              googlePlaceId: rowData.google_place_id,
+              dbPoiId, // Store database POI ID
+              translations: {
+                'ZH-CN': { text: null, status: 'pending' as const, progress: 0 },
+                'ZH-TW': { text: null, status: 'pending' as const, progress: 0 },
+                'JA-JP': { text: null, status: 'pending' as const, progress: 0 },
+                'KO-KR': { text: null, status: 'pending' as const, progress: 0 },
+                'TH-TH': { text: null, status: 'pending' as const, progress: 0 },
+                'VI-VN': { text: null, status: 'pending' as const, progress: 0 },
+                'ID-ID': { text: null, status: 'pending' as const, progress: 0 },
+                'MS-MY': { text: null, status: 'pending' as const, progress: 0 },
+                'EN-US': { text: null, status: 'pending' as const, progress: 0 },
+                'EN-GB': { text: null, status: 'pending' as const, progress: 0 },
+                'FR-FR': { text: null, status: 'pending' as const, progress: 0 },
+                'DE-DE': { text: null, status: 'pending' as const, progress: 0 },
+                'IT-IT': { text: null, status: 'pending' as const, progress: 0 },
+                'PT-BR': { text: null, status: 'pending' as const, progress: 0 }
+              },
+              createdAt: new Date().toISOString().split('T')[0],
+              lastUpdated: new Date().toISOString().split('T')[0]
+            };
+
+            newPOIs.push(newTranslationResult);
+            successCount++;
+          } catch (dbError) {
+            errorCount++;
+            errors.push(`第 ${i + 2} 行: ${dbError instanceof Error ? dbError.message : '資料庫錯誤'}`);
+          }
+
         } catch (error) {
           errorCount++;
           errors.push(`第 ${i + 2} 行: ${error instanceof Error ? error.message : '處理失敗'}`);
         }
-        
+
         // Update progress for initial parsing
-        const progress = 30 + (i / rows.length) * 20;
+        const progress = 30 + (i / rows.length) * 60; // Increased weight for database operations
         setUploadProgress(Math.floor(progress));
       }
 
@@ -847,34 +1018,49 @@ export default function Home() {
           
           // Force UI update before API call
           await new Promise(resolve => setTimeout(resolve, 100));
-          
+
+          console.log('🌐'.repeat(40));
+          console.log(`🔄 FRONTEND: Starting translation for "${poi.name}" to ${language}`);
+          console.log(`   POI Name: ${poi.name}`);
+          console.log(`   Google Place ID: ${poi.googlePlaceId}`);
+          console.log(`   Language: ${language}`);
+          console.log(`   Language Index: ${langIndex + 1}/${languages.length}`);
+          console.log('-'.repeat(80));
+
           // Create timeout promise for API call
           const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('API timeout')), 35000)
+            setTimeout(() => reject(new Error('API timeout')), 15000)
           );
-          
+
           // Create fetch promise
+          const requestBody = {
+            poiName: poi.name,
+            googlePlaceId: poi.googlePlaceId,
+            language: language
+          };
+          console.log(`   Request body:`, requestBody);
+          console.log(`   Calling: POST /api/translation-sources`);
+          console.log(`   Timeout: 15000ms`);
+
           const fetchPromise = fetch(`/api/translation-sources`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              poiName: poi.name, 
-              googlePlaceId: poi.googlePlaceId, 
-              language: language 
-            })
+            body: JSON.stringify(requestBody)
           });
-          
+
           // Race between timeout and fetch
           const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
-          
+          console.log(`   Response status: ${response.status} ${response.ok ? '✓' : '✗'}`);
+
           let translationText = `${poi.name} (${language} - Error)`;
           let translationStatus: 'completed' | 'manual_review' = 'completed';
           let translationSources: { [key: string]: string } = {};
-          
+
           if (response.ok) {
             const data = await response.json();
-            console.log(`[DEBUG] API response for ${language}:`, data.translations);
-            
+            console.log(`   Response received successfully`);
+            console.log(`   Translation data:`, JSON.stringify(data.translations, null, 2));
+
             // Store all API sources for reasoning modal
             translationSources = {
               serp: data.translations?.serp || '',
@@ -882,29 +1068,39 @@ export default function Home() {
               perplexity: data.translations?.perplexity || '',
               openai: data.translations?.openai || ''
             };
-            
-            console.log(`[DEBUG] ================== BEFORE CONSISTENCY CHECK ==================`);
-            console.log(`[DEBUG] POI: ${poi.name}, Language: ${language}`);
-            console.log(`[DEBUG] Raw translation sources:`, translationSources);
-            console.log(`[DEBUG] About to call checkTranslationConsistency...`);
-            
+
+            console.log('-'.repeat(80));
+            console.log('🔍 CONSISTENCY CHECK:');
+            console.log(`   POI: ${poi.name}`);
+            console.log(`   Language: ${language}`);
+            console.log(`   Translation sources:`, translationSources);
+
             // Check translation consistency
             const consistencyResult = checkTranslationConsistency(translationSources);
-            
-            console.log(`[DEBUG] ================== AFTER CONSISTENCY CHECK ==================`);
-            console.log(`[DEBUG] Consistency result:`, consistencyResult);
+
+            console.log(`   Consistency result:`, consistencyResult);
+            console.log(`   Best translation: ${consistencyResult.bestTranslation}`);
+            console.log(`   Needs manual review: ${consistencyResult.needsManualReview}`);
+            console.log(`   Reason: ${consistencyResult.reason}`);
+
             translationText = consistencyResult.bestTranslation || translationText;
-            
+
             if (consistencyResult.needsManualReview) {
               translationStatus = 'manual_review';
-              console.log(`[DEBUG] ${language} needs manual review: ${consistencyResult.reason}`);
+              console.log(`   ⚠️ Result: MANUAL REVIEW REQUIRED`);
               addProgressLog(`⚠️ ${language} 需要人工檢查: 翻譯結果不一致`);
             } else {
-              console.log(`[DEBUG] ${language} translations are consistent: ${consistencyResult.reason}`);
+              console.log(`   ✅ Result: TRANSLATION CONSISTENT`);
               addProgressLog(`✅ ${language} 翻譯完成: ${translationText}`);
             }
+            console.log('🌐'.repeat(40));
+            console.log('');
           } else {
-            console.error(`[DEBUG] Translation API error for ${poi.name} (${language}):`, response.status);
+            const errorText = await response.text();
+            console.error(`   ❌ API ERROR: ${response.status}`);
+            console.error(`   Error response: ${errorText}`);
+            console.log('🌐'.repeat(40));
+            console.log('');
           }
           
           // Complete the translation with real result and consistency status
@@ -993,30 +1189,91 @@ export default function Home() {
       }
       
       // Determine final POI status - use a timeout to ensure all state updates are complete
-      setTimeout(() => {
-        setTranslationResults(prev => 
-          prev.map(result => {
-            if (result.id === poi.id) {
-              // Check if any translation needs manual review
-              let hasManualReviewNeeded = false;
-              Object.values(result.translations).forEach((translation: any) => {
-                if (translation && typeof translation === 'object' && translation.status === 'manual_review') {
-                  hasManualReviewNeeded = true;
-                }
-              });
-              
-              const finalStatus = hasManualReviewNeeded ? 'manual_review' as const : 'completed' as const;
-              const statusMessage = hasManualReviewNeeded 
-                ? `⚠️ ${poi.name} 需要人工檢查 - 部分翻譯不一致`
-                : `🎉 ${poi.name} 所有語言翻譯完成！`;
-              
-              addProgressLog(statusMessage);
-              
-              return { ...result, status: finalStatus };
+      setTimeout(async () => {
+        console.log('[DEBUG] Finalizing translations for POI:', poi.klookId);
+
+        // First, get the current POI state and update the final status
+        let currentPoi: any = null;
+        let finalStatus: 'completed' | 'manual_review' = 'completed';
+
+        setTranslationResults(prev => {
+          currentPoi = prev.find(result => result.id === poi.id);
+
+          if (!currentPoi) {
+            console.error('[DEBUG] POI not found in state:', poi.id);
+            return prev;
+          }
+
+          // Check if any translation needs manual review
+          let hasManualReviewNeeded = false;
+          Object.values(currentPoi.translations).forEach((translation: any) => {
+            if (translation && typeof translation === 'object' && translation.status === 'manual_review') {
+              hasManualReviewNeeded = true;
             }
-            return result;
-          })
-        );
+          });
+
+          finalStatus = hasManualReviewNeeded ? 'manual_review' : 'completed';
+          const statusMessage = hasManualReviewNeeded
+            ? `⚠️ ${poi.name} 需要人工檢查 - 部分翻譯不一致`
+            : `🎉 ${poi.name} 所有語言翻譯完成！`;
+
+          addProgressLog(statusMessage);
+
+          // Update state with final status
+          return prev.map(result =>
+            result.id === poi.id
+              ? { ...result, status: finalStatus }
+              : result
+          );
+        });
+
+        // NOW save translations to database (outside of setState callback)
+        if (currentPoi) {
+          try {
+            addProgressLog(`💾 儲存 ${poi.name} 的翻譯到資料庫...`);
+            console.log('[DEBUG] Starting batch save for POI:', poi.klookId);
+            console.log('[DEBUG] Current POI data:', currentPoi);
+
+            // Prepare translations array for batch save
+            const translationsToSave = Object.entries(currentPoi.translations).map(([languageCode, translation]: [string, any]) => ({
+              languageCode,
+              text: translation.text || '',
+              status: translation.status || 'completed',
+              sources: translation.sources || null,
+              similarityScore: translation.similarityScore || null,
+              needsManualCheck: translation.status === 'manual_review'
+            }));
+
+            console.log('[DEBUG] Translations to save:', translationsToSave.length);
+            console.log('[DEBUG] Sample translation:', translationsToSave[0]);
+
+            const saveResponse = await fetch('/api/translations/batch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                klookId: poi.klookId,
+                translations: translationsToSave
+              })
+            });
+
+            console.log('[DEBUG] Batch save response status:', saveResponse.status);
+
+            if (saveResponse.ok) {
+              const { savedCount, errorCount } = await saveResponse.json();
+              addProgressLog(`✅ ${poi.name} - 成功儲存 ${savedCount} 筆翻譯${errorCount > 0 ? `, ${errorCount} 筆失敗` : ''}`);
+              console.log('[DEBUG] Successfully saved translations:', savedCount);
+            } else {
+              const errorData = await saveResponse.json();
+              console.error('[DEBUG] Failed to save translations:', errorData);
+              addProgressLog(`❌ ${poi.name} - 儲存翻譯失敗: ${errorData.error}`);
+            }
+          } catch (error) {
+            console.error('[DEBUG] Error saving translations to database:', error);
+            addProgressLog(`❌ ${poi.name} - 儲存翻譯時發生錯誤: ${error instanceof Error ? error.message : 'Unknown'}`);
+          }
+        } else {
+          console.error('[DEBUG] Cannot save: currentPoi is null');
+        }
       }, 100);
     }
   };
@@ -1755,8 +2012,8 @@ export default function Home() {
 
     if (exportFormat === 'csv') {
       // Generate CSV content
-      const headers = ['klook_id', 'poi_name', 'country', 'status', 
-        'JA-JP', 'KO-KR', 'TH-TH', 'VI-VN', 
+      const headers = ['klook_id', 'poi_name', 'country', 'status',
+        'ZH-CN', 'ZH-TW', 'JA-JP', 'KO-KR', 'TH-TH', 'VI-VN',
         'ID-ID', 'MS-MY', 'EN-US', 'EN-GB', 'FR-FR', 'DE-DE', 'IT-IT', 'PT-BR'];
       
       const csvContent = [
