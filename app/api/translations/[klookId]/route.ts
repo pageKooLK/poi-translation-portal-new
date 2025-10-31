@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
 
 // Mock database - in a real app, this would be replaced with actual database operations
 let mockTranslations: Record<string, Record<string, any>> = {
@@ -101,8 +102,8 @@ export async function PATCH(
 ) {
   try {
     const klookId = params.klookId;
-    const { language, text } = await request.json();
-    
+    const { language, text, reviewerName, reviewerEmail, reasoning } = await request.json();
+
     if (!klookId) {
       return NextResponse.json(
         { error: 'Klook ID is required' },
@@ -124,48 +125,100 @@ export async function PATCH(
       );
     }
 
-    // Initialize translations for this POI if they don't exist
-    if (!mockTranslations[klookId]) {
-      mockTranslations[klookId] = {};
+    // Get POI from database
+    const { data: poi, error: poiError } = await supabase
+      .from('pois')
+      .select('id')
+      .eq('klook_poi_id', klookId)
+      .single();
+
+    if (poiError || !poi) {
+      return NextResponse.json(
+        { error: `POI with Klook ID ${klookId} not found` },
+        { status: 404 }
+      );
     }
+
+    const poiId = poi.id;
+
+    // Get existing translation
+    const { data: existingTranslation, error: fetchError } = await supabase
+      .from('translations')
+      .select('*')
+      .eq('poi_id', poiId)
+      .eq('language_code', language)
+      .single();
+
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      console.error('Error fetching translation:', fetchError);
+      return NextResponse.json(
+        { error: 'Failed to fetch existing translation', details: fetchError.message },
+        { status: 500 }
+      );
+    }
+
+    const oldValue = existingTranslation?.final_translation;
 
     // Update the translation
-    const currentTranslation = mockTranslations[klookId][language];
-    
-    if (typeof currentTranslation === 'object') {
-      // Update existing object-based translation
-      mockTranslations[klookId][language] = {
-        ...currentTranslation,
-        text: text,
+    const { data: updatedTranslation, error: updateError } = await supabase
+      .from('translations')
+      .upsert({
+        poi_id: poiId,
+        language_code: language,
+        final_translation: text,
         status: 'completed',
-        lastUpdated: new Date().toISOString()
-      };
-    } else {
-      // Create new object-based translation or update simple string
-      mockTranslations[klookId][language] = {
-        text: text,
-        status: 'completed',
-        lastUpdated: new Date().toISOString()
-      };
+        needs_manual_check: false,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'poi_id,language_code'
+      })
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating translation:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update translation', details: updateError.message },
+        { status: 500 }
+      );
     }
 
-    // Log the update (in a real app, this would be saved to database)
+    // Log the edit in edit_history if reviewer info provided
+    if (reviewerName && reviewerEmail) {
+      await supabase
+        .from('edit_history')
+        .insert({
+          poi_id: poiId,
+          language_code: language,
+          action: 'manual_edit',
+          old_value: oldValue,
+          new_value: text,
+          reviewer_name: reviewerName,
+          reviewer_email: reviewerEmail,
+          reasoning: reasoning || null
+        });
+    }
+
+    // Remove from manual check queue if exists
+    await supabase
+      .from('manual_check_queue')
+      .delete()
+      .eq('poi_id', poiId)
+      .eq('language_code', language);
+
     console.log(`Translation updated: ${klookId} - ${language} = "${text}"`);
-    
-    // Simulate database save delay
-    await new Promise(resolve => setTimeout(resolve, 200));
 
     return NextResponse.json({
       success: true,
       klookId,
       language,
-      translation: mockTranslations[klookId][language],
+      translation: updatedTranslation,
       message: `Translation for ${language} updated successfully`
     });
   } catch (error) {
     console.error('Update translation API error:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
     );
   }

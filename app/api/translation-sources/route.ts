@@ -23,6 +23,50 @@ const LANGUAGE_MAPPINGS: Record<string, {
   'PT-BR': { serpapi: 'pt', googleMaps: 'pt-BR', perplexity: 'Portuguese', openai: 'Portuguese' },
 };
 
+// Language character detection patterns
+const LANGUAGE_CHAR_PATTERNS: Record<string, RegExp> = {
+  'ZH-CN': /[\u4e00-\u9fff]/,      // Chinese characters
+  'ZH-TW': /[\u4e00-\u9fff]/,      // Chinese characters
+  'JA-JP': /[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]/, // Hiragana + Katakana + Kanji
+  'KO-KR': /[\uac00-\ud7af]/,      // Korean characters
+  'TH-TH': /[\u0e00-\u0e7f]/,      // Thai characters
+  'VI-VN': /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i, // Vietnamese
+};
+
+// International brands that commonly retain English names
+const INTERNATIONAL_BRANDS = [
+  'starbucks', 'mcdonald', 'disney', 'disneyland', 'universal',
+  'ikea', 'apple store', 'nike', 'adidas', 'uniqlo'
+];
+
+// Country name translations for progressive search
+const COUNTRY_NAMES_IN_LANGUAGE: Record<string, Record<string, string>> = {
+  'JP': {
+    'ZH-CN': '日本', 'ZH-TW': '日本', 'JA-JP': '日本',
+    'KO-KR': '일본', 'TH-TH': 'ญี่ปุ่น', 'FR-FR': 'Japon'
+  },
+  'CN': {
+    'ZH-CN': '中国', 'ZH-TW': '中國', 'JA-JP': '中国',
+    'KO-KR': '중국', 'TH-TH': 'จีน', 'FR-FR': 'Chine'
+  },
+  'TH': {
+    'ZH-CN': '泰国', 'ZH-TW': '泰國', 'JA-JP': 'タイ',
+    'KO-KR': '태국', 'TH-TH': 'ไทย', 'FR-FR': 'Thaïlande'
+  },
+  'HK': {
+    'ZH-CN': '香港', 'ZH-TW': '香港', 'JA-JP': '香港',
+    'KO-KR': '홍콩', 'TH-TH': 'ฮ่องกง', 'FR-FR': 'Hong Kong'
+  },
+  'KR': {
+    'ZH-CN': '韩国', 'ZH-TW': '韓國', 'JA-JP': '韓国',
+    'KO-KR': '한국', 'TH-TH': 'เกาหลี', 'FR-FR': 'Corée'
+  },
+  'SG': {
+    'ZH-CN': '新加坡', 'ZH-TW': '新加坡', 'JA-JP': 'シンガポール',
+    'KO-KR': '싱가포르', 'TH-TH': 'สิงคโปร์', 'FR-FR': 'Singapour'
+  }
+};
+
 // Helper function: Get full language name for search queries
 function getLanguageFullName(language: string): string {
   const languageNames: Record<string, string> = {
@@ -105,48 +149,360 @@ function cleanTitle(title: string): string {
   return cleaned.trim();
 }
 
+// Helper function: Get region-specific language strictness level
+function getLanguageStrictness(country: string): 'strict' | 'moderate' | 'lenient' {
+  // Multi-language regions like Hong Kong, Singapore → lenient mode
+  if (['HK', 'SG'].includes(country)) {
+    return 'lenient';
+  }
+
+  // Single-language countries → strict mode
+  if (['JP', 'KR', 'TH', 'CN', 'TW', 'VN'].includes(country)) {
+    return 'strict';
+  }
+
+  // Other regions → moderate mode
+  return 'moderate';
+}
+
+// Helper function: Analyze language content in text
+function analyzeLanguageContent(text: string, language: string, country: string): {
+  hasTargetLanguage: boolean;
+  hasEnglish: boolean;
+  isAcceptable: boolean;
+  reason: string;
+} {
+  // 🔥 SPECIAL HANDLING: Latin-script languages (French, Vietnamese, etc.)
+  const isLatinLanguage = ['FR-FR', 'VI-VN', 'IT-IT', 'PT-BR', 'ES-ES'].includes(language);
+
+  if (isLatinLanguage) {
+    // French language indicators: common words, contractions, special chars
+    const frenchIndicators = /\b(le|la|les|de|du|des|un|une|avec|pour|dans|sur|par|est|sont|château|jardin|gare|parc|musée|île|pont|temple|palais)\b|[dln]'|à|ç|é|è|ê|ë|ï|î|ô|ù|û|ü/i;
+    // Vietnamese indicators
+    const vietnameseIndicators = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
+    // Common English-only indicators
+    const englishOnlyPattern = /\b(the|and|or|of|in|on|at|to|for|with|from|by|about|as|into|through|during|before|after|above|below|between|under|again|further|then|once)\b/gi;
+
+    let hasTargetLanguage = false;
+    let hasEnglish = false;
+
+    if (language === 'FR-FR') {
+      // 🔥 FIX: Check for non-Latin characters first (CJK, Thai, etc.)
+      const hasNonLatinChars = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\u0e00-\u0e7f]/.test(text);
+
+      if (hasNonLatinChars) {
+        // Contains Asian characters → definitely not French
+        hasTargetLanguage = false;
+        hasEnglish = /[a-zA-Z]{3,}/.test(text);
+      } else {
+        // Pure Latin script → check for French indicators
+        hasTargetLanguage = frenchIndicators.test(text);
+        // Check for pure English patterns
+        const englishMatches = text.match(englishOnlyPattern);
+        hasEnglish = !!(englishMatches && englishMatches.length > 2); // More than 2 English-only words
+      }
+    } else if (language === 'VI-VN') {
+      hasTargetLanguage = vietnameseIndicators.test(text);
+      hasEnglish = /[a-zA-Z]{3,}/.test(text);
+    } else {
+      // Other Latin languages: rely on special characters
+      hasTargetLanguage = /[àâäæçéèêëïîôùûüÿœáíóúñ]/i.test(text);
+      hasEnglish = /[a-zA-Z]{3,}/.test(text);
+    }
+
+    // For short Latin text without English indicators, accept it
+    if (!hasTargetLanguage && !hasEnglish && text.length < 50) {
+      return {
+        hasTargetLanguage: true,
+        hasEnglish: false,
+        isAcceptable: true,
+        reason: 'Short Latin text (likely target language)'
+      };
+    }
+
+    if (hasTargetLanguage) {
+      return {
+        hasTargetLanguage: true,
+        hasEnglish,
+        isAcceptable: true,
+        reason: hasEnglish ? 'Mixed Latin language' : 'Pure Latin language with indicators'
+      };
+    }
+
+    // Pure English for Latin language → likely not translated
+    if (hasEnglish) {
+      return {
+        hasTargetLanguage: false,
+        hasEnglish: true,
+        isAcceptable: false,
+        reason: 'English-only (expected Latin language)'
+      };
+    }
+
+    // Ambiguous case: accept but with lower confidence
+    return {
+      hasTargetLanguage: true,
+      hasEnglish: false,
+      isAcceptable: true,
+      reason: 'Latin script without clear indicators (accepted)'
+    };
+  }
+
+  // 🔥 ORIGINAL LOGIC: For non-Latin languages (Asian languages)
+  const pattern = LANGUAGE_CHAR_PATTERNS[language];
+  const englishPattern = /[a-zA-Z]{3,}/; // At least 3 consecutive English letters
+
+  const hasTargetLanguage = pattern ? pattern.test(text) : true;
+  const hasEnglish = englishPattern.test(text);
+
+  let isAcceptable = false;
+  let reason = '';
+
+  if (hasTargetLanguage) {
+    // Contains target language → acceptable (even if mixed with English)
+    isAcceptable = true;
+    reason = hasEnglish ? 'Mixed language (target + English)' : 'Pure target language';
+  } else if (!pattern) {
+    // For European languages without strict character check
+    isAcceptable = true;
+    reason = 'European language without strict char check';
+  } else if (hasEnglish) {
+    // Pure English but might be a brand name/proper noun
+    const isShortName = text.length < 40;
+    isAcceptable = isShortName; // Accept temporarily, but with lower score
+    reason = isShortName ?
+      'Short English name (possible brand/proper noun)' :
+      'Long English text (likely not translation)';
+  }
+
+  return { hasTargetLanguage, hasEnglish, isAcceptable, reason };
+}
+
+// Helper function: Check if text is an international brand name
+function isBrandName(text: string): boolean {
+  const textLower = text.toLowerCase();
+  return INTERNATIONAL_BRANDS.some(brand => textLower.includes(brand));
+}
+
+// Helper function: Calculate domain bonus from whitelist
+function getDomainBonus(link: string): number {
+  const trustedDomains = [
+    // Encyclopedias
+    { pattern: 'wikipedia.org', bonus: 50 },
+    { pattern: 'britannica.com', bonus: 40 },
+    { pattern: 'namu.wiki', bonus: 50 },  // Korean Wikipedia
+    { pattern: 'baike.baidu.com', bonus: 35 },  // Baidu Baike
+
+    // Official tourism websites
+    { pattern: 'japan-guide.com', bonus: 30 },
+    { pattern: 'jnto.go.jp', bonus: 30 },  // Japan National Tourism Organization
+    { pattern: 'visitkorea.or.kr', bonus: 30 },
+    { pattern: 'tourismthailand.org', bonus: 30 },
+
+    // Map services
+    { pattern: 'google.com/maps', bonus: 25 },
+
+    // Government/official websites
+    { pattern: '.go.jp', bonus: 30 },  // Japanese government
+    { pattern: '.gov.', bonus: 30 },   // Government sites
+    { pattern: '.gov.hk', bonus: 30 },
+    { pattern: '.gov.sg', bonus: 30 },
+  ];
+
+  for (const domain of trustedDomains) {
+    if (link.includes(domain.pattern)) {
+      return domain.bonus;
+    }
+  }
+
+  return 0;
+}
+
+// Helper function: Get country name in target language for progressive search
+function getCountryNameInLanguage(country: string, language: string): string {
+  return COUNTRY_NAMES_IN_LANGUAGE[country]?.[language] || country;
+}
+
+// 🔥 NEW: Helper function to check if search result is relevant to POI
+function checkRelevance(title: string, poiName: string, language: string): { isRelevant: boolean; reason: string } {
+  const titleLower = title.toLowerCase();
+  const poiLower = poiName.toLowerCase();
+
+  // Remove common punctuation and split into words
+  const cleanTitle = titleLower.replace(/[^\w\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\u0e00-\u0e7f]/g, ' ');
+  const cleanPoi = poiLower.replace(/[^\w\s\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\u0e00-\u0e7f]/g, ' ');
+
+  const titleWords = cleanTitle.split(/\s+/).filter(w => w.length > 2);
+  const poiWords = cleanPoi.split(/\s+/).filter(w => w.length > 2);
+
+  // Check for word overlap
+  let matchedWords = 0;
+  for (const poiWord of poiWords) {
+    for (const titleWord of titleWords) {
+      // Check if words overlap significantly (at least 60% or 4 chars)
+      if (titleWord.length > 3 && poiWord.length > 3) {
+        const longer = titleWord.length > poiWord.length ? titleWord : poiWord;
+        const shorter = titleWord.length <= poiWord.length ? titleWord : poiWord;
+
+        if (longer.includes(shorter) || shorter.includes(longer)) {
+          matchedWords++;
+          break;
+        }
+      }
+    }
+  }
+
+  // If we matched at least one significant word, consider it relevant
+  if (matchedWords > 0) {
+    return { isRelevant: true, reason: `Matched ${matchedWords} word(s)` };
+  }
+
+  // Special case: check if title contains the POI name as-is (transliteration)
+  if (titleLower.includes(poiLower) || poiLower.includes(titleLower)) {
+    return { isRelevant: true, reason: 'Contains POI name' };
+  }
+
+  // Check for common alternative spellings or romanizations
+  // For example: "Tokyo" vs "Tōkyō", "Osaka" vs "Ōsaka"
+  const removeAccents = (str: string) => str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const titleNoAccents = removeAccents(cleanTitle);
+  const poiNoAccents = removeAccents(cleanPoi);
+
+  if (titleNoAccents.includes(poiNoAccents) || poiNoAccents.includes(titleNoAccents)) {
+    return { isRelevant: true, reason: 'Matched without accents' };
+  }
+
+  // If no matches found, check if it's a completely different topic
+  // Known unrelated topics that might appear in search results
+  const unrelatedPatterns = [
+    /stonehenge/i,
+    /different.*(?:place|location|site)/i,
+    /unrelated/i
+  ];
+
+  for (const pattern of unrelatedPatterns) {
+    if (pattern.test(title)) {
+      return { isRelevant: false, reason: 'Detected unrelated topic' };
+    }
+  }
+
+  // If no positive or negative signals, mark as potentially irrelevant
+  return { isRelevant: false, reason: 'No word overlap found' };
+}
+
 // Helper function: Evaluate translation quality with scoring system
-function evaluateTranslationQuality(result: any, poiName: string): number {
+function evaluateTranslationQuality(result: any, poiName: string, language: string, country: string): number {
   const title = result.title || '';
   const link = result.link || '';
   const snippet = result.snippet || '';
+  const titleLower = title.toLowerCase();
   let score = 0;
 
-  // Negative scores: Avoid page titles that are not actual translations
-  if (title.toLowerCase().includes('translation of')) score -= 100;
-  if (title.toLowerCase().includes('translate')) score -= 50;
-  if (title.match(/[英中中英日英]/)) score -= 50;
-  if (title.toLowerCase().includes('linguee')) score -= 50;
-  if (title.toLowerCase().includes('dictionary')) score -= 30;
+  // 🔥 NEW: Check relevance first - reject completely unrelated results
+  const relevance = checkRelevance(title, poiName, language);
+  if (!relevance.isRelevant) {
+    console.log(`   ⚠️  Result appears unrelated: ${relevance.reason}`);
+    score -= 150; // Heavy penalty for irrelevant results
+  } else {
+    console.log(`   ✓ Relevance check passed: ${relevance.reason}`);
+    score += 20; // Bonus for relevant results
+  }
 
-  // Penalize reviews and user-generated content (not reliable translations)
+  // Negative scores: Avoid page titles that are not actual translations
+  if (titleLower.includes('translation of')) score -= 100;
+  if (titleLower.includes('translate')) score -= 50;
+  if (title.match(/[英中中英日英]/)) score -= 50;
+  if (titleLower.includes('linguee')) score -= 50;
+  if (titleLower.includes('dictionary')) score -= 30;
+
+  // Penalize reviews and user-generated content
   if (link.includes('tripadvisor.com/ShowUserReviews')) score -= 30;
   if (link.includes('reddit.com')) score -= 20;
   if (link.includes('/reviews/')) score -= 20;
-  if (title.toLowerCase().includes('review')) score -= 15;
+  if (titleLower.includes('review')) score -= 15;
 
-  // Heavily penalize news articles (not translations)
+  // Heavily penalize news articles
   if (link.includes('/news/') || link.includes('/article/') || link.includes('/business/')) score -= 50;
   if (link.includes('koreatimes.co') || link.includes('nytimes.com') || link.includes('bbc.com')) score -= 40;
-  if (title.toLowerCase().match(/\b(video|news|article|report|gov't|government)\b/)) score -= 30;
+  if (titleLower.match(/\b(video|news|article|report|gov't|government)\b/)) score -= 30;
 
-  // Positive scores: Prefer high-quality sources
-  if (link.includes('wikipedia.org')) score += 40;
-  if (link.includes('namu.wiki')) score += 40; // Korean Wikipedia equivalent
-  if (link.includes('official') || title.toLowerCase().includes('official')) score += 30;
-  // Only give points for main TripAdvisor/Klook pages, not reviews
-  if ((link.includes('tripadvisor.') || link.includes('klook.com')) && !link.includes('ShowUserReviews')) score += 20;
-  if (snippet.toLowerCase().includes('official name')) score += 10;
+  // 🔥 NEW: Enhanced commercial content penalties
+  const commercialPatterns = [
+    'tours', 'tickets', 'book', 'booking', 'reserve', 'reservation',
+    'hotel', 'stay', 'accommodation', 'package', 'deal',
+    'best', 'top 10', 'guide to', 'how to visit'
+  ];
+  for (const pattern of commercialPatterns) {
+    if (titleLower.includes(pattern)) {
+      score -= 30;
+      break;
+    }
+  }
 
-  // Relevance check: penalize results that don't seem related to the POI
+  // 🔥 NEW: Informational page penalties
+  const informationalPatterns = ['history', 'about', 'introduction', 'overview', 'learn about', 'discover', 'explore'];
+  for (const pattern of informationalPatterns) {
+    if (titleLower.includes(pattern)) {
+      score -= 25;
+      break;
+    }
+  }
+
+  // Get cleaned title for further analysis
   const cleanedTitle = cleanTitle(title);
 
-  // Check if cleaned title contains any word from original POI name (basic relevance)
-  const poiWords = poiName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-  const titleLower = cleanedTitle.toLowerCase();
-  const hasRelevantWord = poiWords.some(word => titleLower.includes(word));
+  // 🔥 NEW: Language content analysis (replaces simple character check)
+  const langAnalysis = analyzeLanguageContent(cleanedTitle, language, country);
+  const strictness = getLanguageStrictness(country);
 
-  // If no relevant words found, heavily penalize (likely unrelated result)
+  if (langAnalysis.hasTargetLanguage) {
+    // Contains target language → high reward
+    score += 50;
+    console.log(`       ✅ Contains ${language} characters, bonus +50`);
+
+    if (langAnalysis.hasEnglish) {
+      // Mixed language (e.g., "Victoria Harbour 維多利亞港")
+      score += 10;
+      console.log(`       ℹ️ Mixed language detected, bonus +10`);
+    }
+  } else if (langAnalysis.isAcceptable) {
+    // Pure English but acceptable (short name + trusted source)
+    const domainBonus = getDomainBonus(link);
+    const isTrustedSource = domainBonus > 0;
+
+    if (isTrustedSource && cleanedTitle.length < 40) {
+      score += 20;
+      console.log(`       ℹ️ Short English name from trusted source, bonus +20`);
+    } else {
+      score -= 10;
+      console.log(`       ⚠️ Pure English from untrusted source, penalty -10`);
+    }
+  } else {
+    // Pure English long text → heavy penalty based on strictness
+    const penalty = strictness === 'strict' ? -80 :
+                    strictness === 'moderate' ? -40 : -10;
+    score += penalty;
+    console.log(`       ❌ Long English text (${strictness} mode), penalty ${penalty}`);
+  }
+
+  // 🔥 NEW: Domain whitelist bonus
+  const domainBonus = getDomainBonus(link);
+  if (domainBonus > 0) {
+    score += domainBonus;
+    console.log(`       ✅ Trusted domain bonus: +${domainBonus}`);
+  }
+
+  // 🔥 NEW: Brand name recognition
+  if (isBrandName(cleanedTitle)) {
+    score += 15;
+    console.log(`       ℹ️ International brand detected, bonus +15`);
+  }
+
+  // Relevance check: penalize results that don't seem related to the POI
+  const poiWords = poiName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const cleanedTitleLower = cleanedTitle.toLowerCase();
+  const hasRelevantWord = poiWords.some(word => cleanedTitleLower.includes(word));
+
   if (!hasRelevantWord && cleanedTitle !== poiName) {
     score -= 50;
   }
@@ -177,43 +533,40 @@ function extractBestTranslation(candidates: Array<{translation: string, score: n
   return validCandidates[0].translation;
 }
 
-// Real SERP API function with improved 3-layer translation extraction
-async function fetchSerpTranslation(poiName: string, googlePlaceId: string, language: string): Promise<string> {
+// Real SERP API function with improved 3-layer translation extraction and progressive search
+async function fetchSerpTranslation(poiName: string, googlePlaceId: string, language: string, country: string): Promise<string> {
   console.log(`🔵 SERP API: Starting translation for "${poiName}" to ${language}`);
   try {
     const langCode = LANGUAGE_MAPPINGS[language]?.serpapi || 'en';
     const languageFullName = getLanguageFullName(language);
     console.log(`   Language code: ${langCode}`);
     console.log(`   Language full name: ${languageFullName}`);
+    console.log(`   Country: ${country}`);
     console.log(`   API Key available: ${process.env.SERP_API_KEY ? 'Yes' : 'No'}`);
 
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('SERP API timeout')), 5000) // Increased to 5s for better results
+      setTimeout(() => reject(new Error('SERP API timeout')), 5000)
     );
-
-    // Improved search query: "POI name" in [Language]
-    const searchQuery = `"${poiName}" in ${languageFullName}`;
 
     // Map language codes to valid SERP API country codes
     const countryCodeMap: Record<string, string> = {
-      'zh-cn': 'cn',
-      'zh-tw': 'tw',
-      'ja': 'jp',
-      'ko': 'kr',
-      'th': 'th',
-      'vi': 'vn',
-      'id': 'id',
-      'ms': 'my',
-      'en': 'us',
-      'fr': 'fr',
-      'de': 'de',
-      'it': 'it',
-      'pt': 'br'
+      'zh-cn': 'cn', 'zh-tw': 'tw', 'ja': 'jp', 'ko': 'kr',
+      'th': 'th', 'vi': 'vn', 'id': 'id', 'ms': 'my',
+      'en': 'us', 'fr': 'fr', 'de': 'de', 'it': 'it', 'pt': 'br'
     };
     const countryCode = countryCodeMap[langCode] || 'us';
-    const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${process.env.SERP_API_KEY}&hl=${langCode}&gl=${countryCode}`;
+
+    // 🔥 NEW: Progressive search strategy
+    // Phase 1: Pure POI name search
+    let searchQuery = `"${poiName}"`;
+    let data: any = null;
+    let bestResult: string | null = null;
+
+    console.log(`   📍 Phase 1: Pure POI name search`);
     console.log(`   Search query: ${searchQuery}`);
     console.log(`   Country code: ${countryCode}`);
+
+    const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${process.env.SERP_API_KEY}&hl=${langCode}&gl=${countryCode}`;
     console.log(`   Calling: ${url.replace(process.env.SERP_API_KEY || '', 'API_KEY_HIDDEN')}`);
 
     const fetchPromise = fetch(url);
@@ -227,28 +580,38 @@ async function fetchSerpTranslation(poiName: string, googlePlaceId: string, lang
       throw new Error(`SERP API error: ${response.status} - ${errorText}`);
     }
 
-    const data = await response.json();
+    data = await response.json();
     console.log(`   Organic results found: ${data.organic_results?.length || 0}`);
 
     // ============================================================================
-    // LAYER 1: Check Knowledge Graph (Highest Priority)
+    // LAYER 1: Check Knowledge Graph (Highest Priority) with Validation
     // ============================================================================
     if (data.knowledge_graph) {
-      console.log(`   📚 Knowledge Graph found, checking for translation...`);
+      console.log(`   📚 Knowledge Graph found, validating...`);
 
-      if (data.knowledge_graph.title && data.knowledge_graph.title !== poiName) {
-        const kgTitle = data.knowledge_graph.title;
-        console.log(`   ✅ Knowledge Graph title found: "${kgTitle}"`);
-        return kgTitle;
+      const kgTitle = data.knowledge_graph.title || data.knowledge_graph.name;
+
+      if (kgTitle && kgTitle !== poiName) {
+        // 🔥 NEW: Validate KG result before accepting
+        const langAnalysis = analyzeLanguageContent(kgTitle, language, country);
+        const isClean = !kgTitle.toLowerCase().includes('translation of');
+        const isReasonableLength = kgTitle.length < 100;
+
+        console.log(`   Validating KG result: "${kgTitle}"`);
+        console.log(`     - Has target language: ${langAnalysis.hasTargetLanguage}`);
+        console.log(`     - Is acceptable: ${langAnalysis.isAcceptable}`);
+        console.log(`     - Is clean: ${isClean}`);
+        console.log(`     - Reasonable length: ${isReasonableLength}`);
+
+        if (langAnalysis.isAcceptable && isClean && isReasonableLength) {
+          console.log(`   ✅ Knowledge Graph validated: "${kgTitle}"`);
+          return kgTitle;
+        } else {
+          console.log(`   ⚠️ Knowledge Graph validation failed, skipping`);
+        }
+      } else {
+        console.log(`   ℹ️ Knowledge Graph exists but no different translation found`);
       }
-
-      if (data.knowledge_graph.name && data.knowledge_graph.name !== poiName) {
-        const kgName = data.knowledge_graph.name;
-        console.log(`   ✅ Knowledge Graph name found: "${kgName}"`);
-        return kgName;
-      }
-
-      console.log(`   ℹ️ Knowledge Graph exists but no different translation found`);
     }
 
     // ============================================================================
@@ -290,27 +653,33 @@ async function fetchSerpTranslation(poiName: string, googlePlaceId: string, lang
     }
 
     // ============================================================================
-    // LAYER 3: Intelligent Organic Results Analysis
+    // LAYER 3: Intelligent Organic Results Analysis (10 results with position bonus)
     // ============================================================================
+    // 🔥 Move candidates declaration outside to be accessible in Phase 2
+    const candidates: Array<{translation: string, score: number, source: string, rank: number}> = [];
+
     if (data.organic_results && data.organic_results.length > 0) {
-      console.log(`   🔍 Analyzing top 5 organic search results...`);
+      console.log(`   🔍 Analyzing top 10 organic search results...`);
 
-      const candidates: Array<{translation: string, score: number, source: string}> = [];
-
-      // Analyze top 5 results (increased from 3)
-      for (let i = 0; i < Math.min(5, data.organic_results.length); i++) {
+      // 🔥 NEW: Analyze top 10 results (increased from 5) with position bonus
+      for (let i = 0; i < Math.min(10, data.organic_results.length); i++) {
         const result = data.organic_results[i];
         const title = result.title || '';
         const link = result.link || '';
 
         // Evaluate quality
-        const score = evaluateTranslationQuality(result, poiName);
+        const baseScore = evaluateTranslationQuality(result, poiName, language, country);
+
+        // 🔥 NEW: Position bonus (first results are more trustworthy)
+        const positionBonus = Math.max(0, 20 - i * 2); // 1st: +20, 2nd: +18, ..., 10th: +2
+        const finalScore = baseScore + positionBonus;
+
         const cleanedTitle = cleanTitle(title);
 
         console.log(`   [${i + 1}] Title: "${title}"`);
         console.log(`       Cleaned: "${cleanedTitle}"`);
         console.log(`       Source: ${link}`);
-        console.log(`       Score: ${score}`);
+        console.log(`       Base score: ${baseScore}, Position bonus: +${positionBonus}, Final: ${finalScore}`);
 
         // Skip results where title equals POI name (no translation found)
         if (cleanedTitle === poiName) {
@@ -318,29 +687,88 @@ async function fetchSerpTranslation(poiName: string, googlePlaceId: string, lang
           continue;
         }
 
-        if (cleanedTitle && cleanedTitle !== poiName && cleanedTitle.length > 0) {
+        if (cleanedTitle && cleanedTitle !== poiName && cleanedTitle.length > 0 && finalScore > 0) {
           candidates.push({
             translation: cleanedTitle,
-            score: score,
-            source: link
+            score: finalScore,
+            source: link,
+            rank: i + 1
           });
         }
       }
 
-      // Extract best translation from candidates
-      const bestTranslation = extractBestTranslation(candidates);
+      // Sort candidates by score and extract best
+      candidates.sort((a, b) => b.score - a.score);
 
-      if (bestTranslation) {
-        const bestCandidate = candidates.find(c => c.translation === bestTranslation);
-        console.log(`   ✅ Best translation selected: "${bestTranslation}"`);
-        console.log(`      Score: ${bestCandidate?.score}, Source: ${bestCandidate?.source}`);
-        return bestTranslation;
+      if (candidates.length > 0 && candidates[0].score > 50) {
+        // Found high-quality translation
+        const best = candidates[0];
+        console.log(`   ✅ Best translation selected: "${best.translation}"`);
+        console.log(`      Score: ${best.score}, Rank: #${best.rank}, Source: ${best.source}`);
+        return best.translation;
+      } else if (candidates.length > 0) {
+        // Found translation but quality is questionable
+        console.log(`   ⚠️ Best candidate score only ${candidates[0].score} (< 50 threshold)`);
+        bestResult = candidates[0].translation; // Store for potential use after Phase 2
       } else {
         console.log(`   ⚠️ No valid translation found (all candidates scored ≤ 0)`);
       }
     }
 
-    // No translation found through any method
+    // 🔥 NEW: Phase 2 - Progressive search with country name (if Phase 1 failed)
+    if (!bestResult || (candidates.length > 0 && candidates[0].score < 50)) {
+      console.log(`   📍 Phase 2: Retrying with country name...`);
+
+      const countryName = getCountryNameInLanguage(country, language);
+      const fallbackQuery = `"${poiName}" ${countryName}`;
+
+      console.log(`   Search query: ${fallbackQuery}`);
+
+      const fallbackUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(fallbackQuery)}&api_key=${process.env.SERP_API_KEY}&hl=${langCode}&gl=${countryCode}`;
+
+      try {
+        const fallbackFetch = fetch(fallbackUrl);
+        const fallbackResponse = await Promise.race([fallbackFetch, timeoutPromise]) as Response;
+
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json();
+          console.log(`   Organic results found: ${fallbackData.organic_results?.length || 0}`);
+
+          // Retry Layer 3 analysis with fallback data
+          if (fallbackData.organic_results && fallbackData.organic_results.length > 0) {
+            const fallbackCandidates: Array<{translation: string, score: number}> = [];
+
+            for (let i = 0; i < Math.min(10, fallbackData.organic_results.length); i++) {
+              const result = fallbackData.organic_results[i];
+              const baseScore = evaluateTranslationQuality(result, poiName, language, country);
+              const positionBonus = Math.max(0, 20 - i * 2);
+              const finalScore = baseScore + positionBonus;
+              const cleanedTitle = cleanTitle(result.title || '');
+
+              if (cleanedTitle && cleanedTitle !== poiName && finalScore > 0) {
+                fallbackCandidates.push({ translation: cleanedTitle, score: finalScore });
+              }
+            }
+
+            if (fallbackCandidates.length > 0) {
+              fallbackCandidates.sort((a, b) => b.score - a.score);
+              const best = fallbackCandidates[0];
+              console.log(`   ✅ Phase 2 found better result: "${best.translation}" (score: ${best.score})`);
+              return best.translation;
+            }
+          }
+        }
+      } catch (fallbackError) {
+        console.log(`   ⚠️ Phase 2 search failed, using Phase 1 result if available`);
+      }
+    }
+
+    // Return Phase 1 result if available, otherwise "Translation not found"
+    if (bestResult) {
+      console.log(`   ℹ️ Returning Phase 1 result: "${bestResult}"`);
+      return bestResult;
+    }
+
     console.log(`   ❌ Translation not found through any method`);
     return "Translation not found";
 
@@ -797,7 +1225,7 @@ async function fetchOpenAITranslation(poiName: string, googlePlaceId: string, la
 
 export async function POST(request: NextRequest) {
   try {
-    const { poiName, googlePlaceId, language } = await request.json();
+    const { poiName, googlePlaceId, language, country } = await request.json();
 
     console.log('='.repeat(80));
     console.log('🚀 TRANSLATION REQUEST STARTED');
@@ -806,6 +1234,7 @@ export async function POST(request: NextRequest) {
     console.log(`   POI Name: ${poiName}`);
     console.log(`   Google Place ID: ${googlePlaceId}`);
     console.log(`   Language: ${language}`);
+    console.log(`   Country: ${country || 'Not specified'}`);
     console.log(`   Timestamp: ${new Date().toISOString()}`);
     console.log('-'.repeat(80));
 
@@ -841,7 +1270,7 @@ export async function POST(request: NextRequest) {
     // Fetch translations from all sources concurrently
     const startTime = Date.now();
     const [serpTranslation, googleMapsTranslation, perplexityTranslation, openaiTranslation] = await Promise.allSettled([
-      fetchSerpTranslation(poiName, googlePlaceId, language),
+      fetchSerpTranslation(poiName, googlePlaceId, language, country),
       fetchGoogleMapsTranslation(poiName, googlePlaceId, language),
       fetchPerplexityTranslation(poiName, googlePlaceId, language),
       fetchOpenAITranslation(poiName, googlePlaceId, language)
