@@ -7,6 +7,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { klookId, name, googlePlaceId, country, googleMapsData } = body;
 
+    console.log('Received POI creation request:', { klookId, name, country });
+
     // Validate required fields
     if (!klookId || !name || !googlePlaceId || !country) {
       return NextResponse.json(
@@ -15,28 +17,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if POI with this Klook ID already exists
-    const { data: existingPoi, error: checkError } = await supabase
-      .from('pois')
-      .select('id, klook_poi_id')
-      .eq('klook_poi_id', klookId)
-      .single();
-
-    if (checkError && checkError.code !== 'PGRST116') {
-      // PGRST116 means no rows found, which is expected for new POIs
-      console.error('Error checking for existing POI:', checkError);
+    // Verify Supabase client is initialized
+    if (!supabase) {
+      console.error('Supabase client not initialized');
       return NextResponse.json(
-        { error: 'Database error checking for duplicates', details: checkError.message },
+        { error: 'Database connection not available' },
         { status: 500 }
       );
     }
 
-    if (existingPoi) {
-      return NextResponse.json(
-        { error: 'POI with this Klook ID already exists', existingPoiId: existingPoi.id },
-        { status: 409 }
-      );
-    }
+    // Note: Duplicate Klook IDs are now allowed for re-translation purposes
+    console.log('Creating POI (duplicates allowed):', klookId);
 
     // Insert new POI
     const { data: newPoi, error: insertError } = await supabase
