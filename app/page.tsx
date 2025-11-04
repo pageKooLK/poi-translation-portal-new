@@ -36,6 +36,10 @@ import {
 } from "lucide-react"
 
 export default function Home() {
+  // Tab navigation state
+  const [currentTab, setCurrentTab] = useState('overview');
+  const [highlightedKlookId, setHighlightedKlookId] = useState<string | null>(null);
+
   // POI form state
   const [poiForm, setPoiForm] = useState({
     klookId: '',
@@ -85,12 +89,22 @@ export default function Home() {
     googleMaps?: string;
     perplexity?: string;
     openai?: string;
+    openrouter_gpt4_turbo?: string;
+    openrouter_claude_sonnet?: string;
+    openrouter_gemini_flash?: string;
+    openrouter_gpt5_nano?: string;
+    openrouter_sonar_pro?: string;
   }>({});
   const [sourceReasoning, setSourceReasoning] = useState<{
     serp?: string;
     googleMaps?: string;
     perplexity?: string;
     openai?: string;
+    openrouter_gpt4_turbo?: string;
+    openrouter_claude_sonnet?: string;
+    openrouter_gemini_flash?: string;
+    openrouter_gpt5_nano?: string;
+    openrouter_sonar_pro?: string;
   }>({});
   const [showReasoningModal, setShowReasoningModal] = useState<{
     source: string;
@@ -109,14 +123,24 @@ export default function Home() {
   // Translation sources loading state
   const [sourcesLoadingProgress, setSourcesLoadingProgress] = useState<{
     serp: boolean;
-    googleMaps: boolean; 
+    googleMaps: boolean;
     perplexity: boolean;
     openai: boolean;
+    openrouter_gpt4_turbo: boolean;
+    openrouter_claude_sonnet: boolean;
+    openrouter_gemini_flash: boolean;
+    openrouter_gpt5_nano: boolean;
+    openrouter_sonar_pro: boolean;
   }>({
     serp: false,
     googleMaps: false,
     perplexity: false,
-    openai: false
+    openai: false,
+    openrouter_gpt4_turbo: false,
+    openrouter_claude_sonnet: false,
+    openrouter_gemini_flash: false,
+    openrouter_gpt5_nano: false,
+    openrouter_sonar_pro: false,
   });
 
   // Translation progress tracking state
@@ -490,6 +514,17 @@ export default function Home() {
     };
   }, [refreshInterval]);
 
+  // Clear highlight after 5 seconds
+  useEffect(() => {
+    if (highlightedKlookId) {
+      const timer = setTimeout(() => {
+        setHighlightedKlookId(null);
+      }, 5000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [highlightedKlookId]);
+
   // Handle form input changes
   const handleInputChange = useCallback((field: string, value: string) => {
     setPoiForm(prev => ({ ...prev, [field]: value }));
@@ -635,12 +670,8 @@ export default function Home() {
       return;
     }
 
-    // Check for duplicate Klook ID
-    const existingPOI = translationResults.find(poi => poi.klookId === poiForm.klookId);
-    if (existingPOI) {
-      alert(`POI with Klook ID "${poiForm.klookId}" already exists!`);
-      return;
-    }
+    // Allow duplicate Klook IDs - users can re-translate the same POI
+    // No duplicate check performed
 
     setIsSubmitting(true);
     setSubmitStatus('idle');
@@ -812,13 +843,7 @@ export default function Home() {
             rowData[header] = values[index] || '';
           });
 
-          // Check if POI already exists in current results
-          const existingPoi = translationResults.find(p => p.klookId === rowData.klook_id);
-          if (existingPoi) {
-            duplicateCount++;
-            errors.push(`第 ${i + 2} 行: Klook ID ${rowData.klook_id} 已存在`);
-            continue;
-          }
+          // Allow duplicate Klook IDs - users can re-translate the same POI
 
           // Create POI in database first
           try {
@@ -839,11 +864,11 @@ export default function Home() {
               dbPoiId = createdPoi.id;
             } else {
               const errorData = await createResponse.json();
+              // Allow re-translation even if POI exists in database (409 error)
               if (createResponse.status === 409) {
-                // POI already exists in database
-                duplicateCount++;
-                errors.push(`第 ${i + 2} 行: Klook ID ${rowData.klook_id} 已存在於資料庫`);
-                continue;
+                // POI already exists, but we'll still proceed with translation
+                // Use a placeholder dbPoiId or skip database linking
+                dbPoiId = `existing_${rowData.klook_id}`;
               } else {
                 throw new Error(errorData.error || '建立 POI 失敗');
               }
@@ -1372,13 +1397,23 @@ export default function Home() {
           serp: `${currentText} (SERP - Error)`,
           googleMaps: `${currentText} (Google Maps - Error)`,
           perplexity: `${currentText} (Perplexity - Error)`,
-          openai: `${currentText} (OpenAI - Error)`
+          openai: `${currentText} (OpenAI - Error)`,
+          openrouter_gpt4_turbo: `${currentText} (GPT-4 Turbo - Error)`,
+          openrouter_claude_sonnet: `${currentText} (Claude Sonnet - Error)`,
+          openrouter_gemini_flash: `${currentText} (Gemini Flash - Error)`,
+          openrouter_gpt5_nano: `${currentText} (GPT-4o Mini - Error)`,
+          openrouter_sonar_pro: `${currentText} (Sonar Pro - Error)`,
         },
         reasoning: {
           serp: `**Error Loading SERP Data**\n\nUnable to fetch SERP analysis for "${poi.name}". Please try again later.`,
           googleMaps: `**Error Loading Google Maps Data**\n\nUnable to fetch Google Maps data for "${poi.name}". Please try again later.`,
           perplexity: `**Error Loading Perplexity Data**\n\nUnable to fetch Perplexity AI analysis for "${poi.name}". Please try again later.`,
-          openai: `**Error Loading OpenAI Data**\n\nUnable to fetch OpenAI analysis for "${poi.name}". Please try again later.`
+          openai: `**Error Loading OpenAI Data**\n\nUnable to fetch OpenAI analysis for "${poi.name}". Please try again later.`,
+          openrouter_gpt4_turbo: `**Error Loading OpenRouter GPT-4 Turbo**\n\nUnable to fetch GPT-4 Turbo translation for "${poi.name}". Please try again later.`,
+          openrouter_claude_sonnet: `**Error Loading OpenRouter Claude Sonnet**\n\nUnable to fetch Claude Sonnet translation for "${poi.name}". Please try again later.`,
+          openrouter_gemini_flash: `**Error Loading OpenRouter Gemini Flash**\n\nUnable to fetch Gemini Flash translation for "${poi.name}". Please try again later.`,
+          openrouter_gpt5_nano: `**Error Loading OpenRouter GPT-4o Mini**\n\nUnable to fetch GPT-4o Mini translation for "${poi.name}". Please try again later.`,
+          openrouter_sonar_pro: `**Error Loading OpenRouter Sonar Pro**\n\nUnable to fetch Sonar Pro translation for "${poi.name}". Please try again later.`,
         }
       };
     }
@@ -1395,27 +1430,42 @@ export default function Home() {
     setSelectedTranslation({ poi, language, translation, mode });
     setEditedTranslationText(currentText || '');
     
-    // Show loading state for all sources
+    // Show loading state for all sources (including OpenRouter models)
     setSourcesLoadingProgress({
       serp: true,
       googleMaps: true,
       perplexity: true,
-      openai: true
+      openai: true,
+      openrouter_gpt4_turbo: true,
+      openrouter_claude_sonnet: true,
+      openrouter_gemini_flash: true,
+      openrouter_gpt5_nano: true,
+      openrouter_sonar_pro: true,
     });
-    
+
     // Set initial translations to base translation while loading
     setTranslationSources({
       serp: baseTranslation,
       googleMaps: baseTranslation,
       perplexity: baseTranslation,
-      openai: baseTranslation
+      openai: baseTranslation,
+      openrouter_gpt4_turbo: baseTranslation,
+      openrouter_claude_sonnet: baseTranslation,
+      openrouter_gemini_flash: baseTranslation,
+      openrouter_gpt5_nano: baseTranslation,
+      openrouter_sonar_pro: baseTranslation,
     });
-    
+
     // Set initial loading reasoning
     setSourceReasoning({
       serp: '**Loading SERP Analysis...**\n\nFetching real-time search results and frequency analysis...',
       googleMaps: '**Loading Google Maps Data...**\n\nRetrieving Google Maps context and visual references...',
       perplexity: '**Loading Perplexity AI Analysis...**\n\nProcessing AI-powered translation analysis...',
+      openrouter_gpt4_turbo: '**Loading OpenRouter GPT-4 Turbo...**\n\nProcessing translation with GPT-4 Turbo model...',
+      openrouter_claude_sonnet: '**Loading OpenRouter Claude Sonnet...**\n\nProcessing translation with Claude 3.5 Sonnet model...',
+      openrouter_gemini_flash: '**Loading OpenRouter Gemini Flash...**\n\nProcessing translation with Gemini 2.5 Flash model...',
+      openrouter_gpt5_nano: '**Loading OpenRouter GPT-4o Mini...**\n\nProcessing translation with GPT-4o Mini model...',
+      openrouter_sonar_pro: '**Loading OpenRouter Sonar Pro...**\n\nProcessing translation with Sonar Pro Search model...',
       openai: '**Loading OpenAI Translation...**\n\nGenerating GPT-powered translation insights...'
     });
     
@@ -1429,17 +1479,27 @@ export default function Home() {
           serp: sourcesData.translations.serp || baseTranslation,
           googleMaps: sourcesData.translations.googleMaps || baseTranslation,
           perplexity: sourcesData.translations.perplexity || baseTranslation,
-          openai: sourcesData.translations.openai || baseTranslation
+          openai: sourcesData.translations.openai || baseTranslation,
+          openrouter_gpt4_turbo: sourcesData.translations.openrouter_gpt4_turbo || baseTranslation,
+          openrouter_claude_sonnet: sourcesData.translations.openrouter_claude_sonnet || baseTranslation,
+          openrouter_gemini_flash: sourcesData.translations.openrouter_gemini_flash || baseTranslation,
+          openrouter_gpt5_nano: sourcesData.translations.openrouter_gpt5_nano || baseTranslation,
+          openrouter_sonar_pro: sourcesData.translations.openrouter_sonar_pro || baseTranslation,
         });
       }
-      
+
       // Update with real reasoning data
       if (sourcesData.reasoning) {
         setSourceReasoning({
           serp: sourcesData.reasoning.serp || `**SERP Analysis Complete**\n\nAnalysis completed for "${poi.name}" → ${language}`,
           googleMaps: sourcesData.reasoning.googleMaps || `**Google Maps Data Complete**\n\nContext retrieved for "${poi.name}" → ${language}`,
           perplexity: sourcesData.reasoning.perplexity || `**Perplexity AI Analysis Complete**\n\nAI analysis completed for "${poi.name}" → ${language}`,
-          openai: sourcesData.reasoning.openai || `**OpenAI Translation Complete**\n\nGPT analysis completed for "${poi.name}" → ${language}`
+          openai: sourcesData.reasoning.openai || `**OpenAI Translation Complete**\n\nGPT analysis completed for "${poi.name}" → ${language}`,
+          openrouter_gpt4_turbo: sourcesData.reasoning.openrouter_gpt4_turbo || `**OpenRouter GPT-4 Turbo Complete**\n\nTranslation completed for "${poi.name}" → ${language}`,
+          openrouter_claude_sonnet: sourcesData.reasoning.openrouter_claude_sonnet || `**OpenRouter Claude Sonnet Complete**\n\nTranslation completed for "${poi.name}" → ${language}`,
+          openrouter_gemini_flash: sourcesData.reasoning.openrouter_gemini_flash || `**OpenRouter Gemini Flash Complete**\n\nTranslation completed for "${poi.name}" → ${language}`,
+          openrouter_gpt5_nano: sourcesData.reasoning.openrouter_gpt5_nano || `**OpenRouter GPT-4o Mini Complete**\n\nTranslation completed for "${poi.name}" → ${language}`,
+          openrouter_sonar_pro: sourcesData.reasoning.openrouter_sonar_pro || `**OpenRouter Sonar Pro Complete**\n\nTranslation completed for "${poi.name}" → ${language}`,
         });
       }
       
@@ -1447,12 +1507,17 @@ export default function Home() {
       console.error('Error loading translation sources:', error);
       // Keep the base translations and show error in reasoning - already handled by fetchTranslationSources
     } finally {
-      // Clear loading states
+      // Clear loading states for all sources
       setSourcesLoadingProgress({
         serp: false,
         googleMaps: false,
         perplexity: false,
-        openai: false
+        openai: false,
+        openrouter_gpt4_turbo: false,
+        openrouter_claude_sonnet: false,
+        openrouter_gemini_flash: false,
+        openrouter_gpt5_nano: false,
+        openrouter_sonar_pro: false,
       });
     }
   }, []);
@@ -2131,7 +2196,7 @@ export default function Home() {
         </div>
 
         {/* Tabs Navigation */}
-        <Tabs defaultValue="overview" className="space-y-6">
+        <Tabs value={currentTab} onValueChange={setCurrentTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-5 bg-slate-100">
             <TabsTrigger value="overview" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
               <div className="flex items-center gap-2">
@@ -2811,8 +2876,13 @@ export default function Home() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredTranslationResults.map((poi) => (
-                        <TableRow key={poi.id}>
+                      {filteredTranslationResults.map((poi) => {
+                        const isHighlighted = highlightedKlookId === poi.klookId;
+                        return (
+                        <TableRow
+                          key={poi.id}
+                          className={isHighlighted ? 'bg-yellow-50 border-2 border-yellow-400 animate-pulse' : ''}
+                        >
                           <TableCell>
                             <div className="text-sm">
                               <div className="text-slate-900 font-medium">{poi.lastUpdated}</div>
@@ -2972,7 +3042,8 @@ export default function Home() {
                             </div>
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -3788,6 +3859,241 @@ export default function Home() {
                             size="sm" 
                             className="mt-2 text-xs h-6"
                             onClick={() => handleUseTranslation((translationSources.openai || '').replace(/\s*\([^)]*\)\s*$/, ''))}
+                          >
+                            Use This Translation
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* OpenRouter GPT-4 Turbo */}
+                    <Card className="border-orange-300 bg-orange-50/30">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-orange-600 rounded-full"></div>
+                            <CardTitle className="text-xs text-gray-600">OpenRouter GPT-4 Turbo</CardTitle>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-5 w-5 p-0"
+                            onClick={() => handleReasoningClick(
+                              'OpenRouter GPT-4 Turbo',
+                              sourceReasoning.openrouter_gpt4_turbo || 'No reasoning available',
+                              translationSources.openrouter_gpt4_turbo || 'Processing...'
+                            )}
+                            title="View reasoning"
+                          >
+                            <MessageCircle className="h-2.5 w-2.5" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        <div className="text-xs text-slate-600 bg-white/50 p-2 rounded border">
+                          {sourcesLoadingProgress.openrouter_gpt4_turbo ? (
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 border-2 border-orange-600 border-t-transparent rounded-full animate-spin"></div>
+                              <span>Processing with GPT-4 Turbo...</span>
+                            </div>
+                          ) : (
+                            (translationSources.openrouter_gpt4_turbo || 'No data available').replace(/\s*\([^)]*\)\s*$/, '')
+                          )}
+                        </div>
+                        {selectedTranslation.mode === 'edit' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 text-xs h-6"
+                            onClick={() => handleUseTranslation((translationSources.openrouter_gpt4_turbo || '').replace(/\s*\([^)]*\)\s*$/, ''))}
+                          >
+                            Use This Translation
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* OpenRouter Claude Sonnet */}
+                    <Card className="border-purple-300 bg-purple-50/30">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
+                            <CardTitle className="text-xs text-gray-600">OpenRouter Claude Sonnet</CardTitle>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-5 w-5 p-0"
+                            onClick={() => handleReasoningClick(
+                              'OpenRouter Claude Sonnet',
+                              sourceReasoning.openrouter_claude_sonnet || 'No reasoning available',
+                              translationSources.openrouter_claude_sonnet || 'Processing...'
+                            )}
+                            title="View reasoning"
+                          >
+                            <MessageCircle className="h-2.5 w-2.5" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        <div className="text-xs text-slate-600 bg-white/50 p-2 rounded border">
+                          {sourcesLoadingProgress.openrouter_claude_sonnet ? (
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 border-2 border-purple-600 border-t-transparent rounded-full animate-spin"></div>
+                              <span>Processing with Claude Sonnet...</span>
+                            </div>
+                          ) : (
+                            (translationSources.openrouter_claude_sonnet || 'No data available').replace(/\s*\([^)]*\)\s*$/, '')
+                          )}
+                        </div>
+                        {selectedTranslation.mode === 'edit' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 text-xs h-6"
+                            onClick={() => handleUseTranslation((translationSources.openrouter_claude_sonnet || '').replace(/\s*\([^)]*\)\s*$/, ''))}
+                          >
+                            Use This Translation
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* OpenRouter Gemini Flash */}
+                    <Card className="border-blue-300 bg-blue-50/30">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
+                            <CardTitle className="text-xs text-gray-600">OpenRouter Gemini Flash</CardTitle>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-5 w-5 p-0"
+                            onClick={() => handleReasoningClick(
+                              'OpenRouter Gemini Flash',
+                              sourceReasoning.openrouter_gemini_flash || 'No reasoning available',
+                              translationSources.openrouter_gemini_flash || 'Processing...'
+                            )}
+                            title="View reasoning"
+                          >
+                            <MessageCircle className="h-2.5 w-2.5" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        <div className="text-xs text-slate-600 bg-white/50 p-2 rounded border">
+                          {sourcesLoadingProgress.openrouter_gemini_flash ? (
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                              <span>Processing with Gemini Flash...</span>
+                            </div>
+                          ) : (
+                            (translationSources.openrouter_gemini_flash || 'No data available').replace(/\s*\([^)]*\)\s*$/, '')
+                          )}
+                        </div>
+                        {selectedTranslation.mode === 'edit' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 text-xs h-6"
+                            onClick={() => handleUseTranslation((translationSources.openrouter_gemini_flash || '').replace(/\s*\([^)]*\)\s*$/, ''))}
+                          >
+                            Use This Translation
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* OpenRouter GPT-4o Mini */}
+                    <Card className="border-green-300 bg-green-50/30">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+                            <CardTitle className="text-xs text-gray-600">OpenRouter GPT-4o Mini</CardTitle>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-5 w-5 p-0"
+                            onClick={() => handleReasoningClick(
+                              'OpenRouter GPT-4o Mini',
+                              sourceReasoning.openrouter_gpt5_nano || 'No reasoning available',
+                              translationSources.openrouter_gpt5_nano || 'Processing...'
+                            )}
+                            title="View reasoning"
+                          >
+                            <MessageCircle className="h-2.5 w-2.5" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        <div className="text-xs text-slate-600 bg-white/50 p-2 rounded border">
+                          {sourcesLoadingProgress.openrouter_gpt5_nano ? (
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
+                              <span>Processing with GPT-4o Mini...</span>
+                            </div>
+                          ) : (
+                            (translationSources.openrouter_gpt5_nano || 'No data available').replace(/\s*\([^)]*\)\s*$/, '')
+                          )}
+                        </div>
+                        {selectedTranslation.mode === 'edit' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 text-xs h-6"
+                            onClick={() => handleUseTranslation((translationSources.openrouter_gpt5_nano || '').replace(/\s*\([^)]*\)\s*$/, ''))}
+                          >
+                            Use This Translation
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    {/* OpenRouter Sonar Pro */}
+                    <Card className="border-red-300 bg-red-50/30">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-red-600 rounded-full"></div>
+                            <CardTitle className="text-xs text-gray-600">OpenRouter Sonar Pro</CardTitle>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-5 w-5 p-0"
+                            onClick={() => handleReasoningClick(
+                              'OpenRouter Sonar Pro',
+                              sourceReasoning.openrouter_sonar_pro || 'No reasoning available',
+                              translationSources.openrouter_sonar_pro || 'Processing...'
+                            )}
+                            title="View reasoning"
+                          >
+                            <MessageCircle className="h-2.5 w-2.5" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        <div className="text-xs text-slate-600 bg-white/50 p-2 rounded border">
+                          {sourcesLoadingProgress.openrouter_sonar_pro ? (
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 border-2 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+                              <span>Processing with Sonar Pro...</span>
+                            </div>
+                          ) : (
+                            (translationSources.openrouter_sonar_pro || 'No data available').replace(/\s*\([^)]*\)\s*$/, '')
+                          )}
+                        </div>
+                        {selectedTranslation.mode === 'edit' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 text-xs h-6"
+                            onClick={() => handleUseTranslation((translationSources.openrouter_sonar_pro || '').replace(/\s*\([^)]*\)\s*$/, ''))}
                           >
                             Use This Translation
                           </Button>
