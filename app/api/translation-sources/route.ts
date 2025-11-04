@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { generateOpenRouterPrompt } from '../openrouter/language-mappings';
 
 // Language code mapping for different APIs
 const LANGUAGE_MAPPINGS: Record<string, {
@@ -1223,6 +1224,181 @@ async function fetchOpenAITranslation(poiName: string, googlePlaceId: string, la
   }
 }
 
+// OpenRouter model configurations
+const OPENROUTER_MODELS = {
+  gpt4_turbo: {
+    id: 'openai/gpt-4-turbo',
+    displayName: 'GPT-4 Turbo',
+    sourceType: 'openrouter_gpt4_turbo',
+  },
+  claude_sonnet: {
+    id: 'anthropic/claude-3.5-sonnet',
+    displayName: 'Claude 3.5 Sonnet',
+    sourceType: 'openrouter_claude_sonnet',
+  },
+  gemini_flash: {
+    id: 'google/gemini-2.0-flash-exp:free',
+    displayName: 'Gemini 2.5 Flash Lite',
+    sourceType: 'openrouter_gemini_flash',
+  },
+  gpt5_nano: {
+    id: 'openai/gpt-4o-mini',
+    displayName: 'GPT-4o Mini',
+    sourceType: 'openrouter_gpt5_nano',
+  },
+  sonar_pro: {
+    id: 'mistralai/mistral-7b-instruct',
+    displayName: 'Mistral 7B',
+    sourceType: 'openrouter_sonar_pro',
+  },
+};
+
+// Call single OpenRouter model
+async function callOpenRouterModel(
+  modelId: string,
+  modelName: string,
+  prompt: string,
+  timeout: number = 25000
+): Promise<{ translation: string; reasoning: string; confidence: number }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 500,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+
+    if (!content) {
+      throw new Error('Empty response from model');
+    }
+
+    // Parse JSON array response
+    let translation = '';
+    let reasoning = `Translation from ${modelName}`;
+    let jsonMatch = null;
+
+    try {
+      jsonMatch = content.match(/\[[\s\S]*?\]/);
+      if (jsonMatch) {
+        const parsedArray = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(parsedArray) && parsedArray.length > 0) {
+          translation = parsedArray[0];
+        } else if (Array.isArray(parsedArray) && parsedArray.length === 0) {
+          translation = '';
+          reasoning = `${modelName}: No commonly used local name found`;
+        }
+      } else {
+        translation = content.trim();
+        reasoning = `${modelName}: Direct translation (non-JSON response)`;
+      }
+    } catch (parseError) {
+      translation = content.trim();
+      reasoning = `${modelName}: Parsed from text response`;
+    }
+
+    let confidence = 0.75;
+    if (translation.length > 0 && translation.length < 50) {
+      confidence = 0.85;
+    }
+    if (jsonMatch) {
+      confidence += 0.05;
+    }
+
+    return {
+      translation: translation || 'Translation not available',
+      reasoning: reasoning,
+      confidence: Math.min(confidence, 0.95),
+    };
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    return {
+      translation: 'Translation failed',
+      reasoning: `${modelName}: ${error.message || 'Unknown error'}`,
+      confidence: 0,
+    };
+  }
+}
+
+// Fetch translations from OpenRouter (5 models)
+async function fetchOpenRouterTranslations(poiName: string, language: string, country?: string): Promise<any> {
+  console.log(`🤖 OpenRouter: Starting translations for "${poiName}" to ${language}`);
+
+  try {
+    if (!process.env.OPENROUTER_API_KEY) {
+      throw new Error('OpenRouter API key not configured');
+    }
+
+    // Generate the prompt
+    const prompt = generateOpenRouterPrompt(poiName, language, country);
+
+    // Call all 5 models in parallel
+    const modelPromises = Object.entries(OPENROUTER_MODELS).map(async ([key, modelConfig]) => {
+      const result = await callOpenRouterModel(
+        modelConfig.id,
+        modelConfig.displayName,
+        prompt
+      );
+      return { key, modelConfig, result };
+    });
+
+    const results = await Promise.all(modelPromises);
+
+    // Format response
+    const translations: Record<string, string> = {};
+    const reasoning: Record<string, string> = {};
+    const confidence: Record<string, number> = {};
+
+    results.forEach(({ modelConfig, result }) => {
+      translations[modelConfig.sourceType] = result.translation;
+      reasoning[modelConfig.sourceType] = result.reasoning;
+      confidence[modelConfig.sourceType] = result.confidence;
+    });
+
+    console.log(`   ✅ OpenRouter returned ${Object.keys(translations).length} model translations`);
+
+    return { translations, reasoning, confidence };
+  } catch (error: any) {
+    console.error(`   ❌ OpenRouter fetch error:`, error);
+    return {
+      translations: {
+        openrouter_gpt4_turbo: 'Translation failed',
+        openrouter_claude_sonnet: 'Translation failed',
+        openrouter_gemini_flash: 'Translation failed',
+        openrouter_gpt5_nano: 'Translation failed',
+        openrouter_sonar_pro: 'Translation failed',
+      },
+      reasoning: {
+        openrouter_gpt4_turbo: 'OpenRouter API error',
+        openrouter_claude_sonnet: 'OpenRouter API error',
+        openrouter_gemini_flash: 'OpenRouter API error',
+        openrouter_gpt5_nano: 'OpenRouter API error',
+        openrouter_sonar_pro: 'OpenRouter API error',
+      },
+      confidence: {},
+    };
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { poiName, googlePlaceId, language, country } = await request.json();
@@ -1264,16 +1440,18 @@ export async function POST(request: NextRequest) {
     console.log(`   PERPLEXITY_API_KEY: ${process.env.PERPLEXITY_API_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log(`   SERP_API_KEY: ${process.env.SERP_API_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log(`   GOOGLE_MAPS_API_KEY: ${process.env.GOOGLE_MAPS_API_KEY ? '✓ Set' : '✗ Missing'}`);
+    console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '✓ Set' : '✗ Missing'}`);
     console.log('-'.repeat(80));
     console.log('🌐 Starting parallel API calls...');
 
-    // Fetch translations from all sources concurrently
+    // Fetch translations from all sources concurrently (including OpenRouter)
     const startTime = Date.now();
-    const [serpTranslation, googleMapsTranslation, perplexityTranslation, openaiTranslation] = await Promise.allSettled([
+    const [serpTranslation, googleMapsTranslation, perplexityTranslation, openaiTranslation, openrouterTranslation] = await Promise.allSettled([
       fetchSerpTranslation(poiName, googlePlaceId, language, country),
       fetchGoogleMapsTranslation(poiName, googlePlaceId, language),
       fetchPerplexityTranslation(poiName, googlePlaceId, language),
-      fetchOpenAITranslation(poiName, googlePlaceId, language)
+      fetchOpenAITranslation(poiName, googlePlaceId, language),
+      fetchOpenRouterTranslations(poiName, language, country)
     ]);
     const totalTime = Date.now() - startTime;
 
@@ -1296,12 +1474,30 @@ export async function POST(request: NextRequest) {
     console.log('   4. OpenAI:');
     console.log(`      Status: ${openaiTranslation.status === 'fulfilled' ? '✓ Success' : '✗ Failed'}`);
     console.log(`      Result: ${openaiTranslation.status === 'fulfilled' ? openaiTranslation.value : (openaiTranslation as PromiseRejectedResult).reason}`);
+    console.log('');
+    console.log('   5. OpenRouter (5 models):');
+    console.log(`      Status: ${openrouterTranslation.status === 'fulfilled' ? '✓ Success' : '✗ Failed'}`);
+    if (openrouterTranslation.status === 'fulfilled') {
+      const orResults = openrouterTranslation.value;
+      console.log(`      Models returned: ${Object.keys(orResults.translations || {}).length}`);
+    }
+
+    // Extract OpenRouter results
+    const openrouterResults = openrouterTranslation.status === 'fulfilled'
+      ? openrouterTranslation.value
+      : {
+          translations: {},
+          reasoning: {},
+          confidence: {},
+        };
 
     const translations = {
       serp: serpTranslation.status === 'fulfilled' ? serpTranslation.value : 'Translation failed',
       googleMaps: googleMapsTranslation.status === 'fulfilled' ? googleMapsTranslation.value : 'Translation failed',
       perplexity: perplexityTranslation.status === 'fulfilled' ? perplexityTranslation.value : 'Translation failed',
-      openai: openaiTranslation.status === 'fulfilled' ? openaiTranslation.value : 'Translation failed'
+      openai: openaiTranslation.status === 'fulfilled' ? openaiTranslation.value : 'Translation failed',
+      // Add OpenRouter model translations
+      ...openrouterResults.translations,
     };
 
     // Generate reasoning for each source
@@ -1312,7 +1508,9 @@ export async function POST(request: NextRequest) {
       
       perplexity: `**Perplexity AI Reasoning**\n\nFor "${poiName}" → ${language}:\n\n**AI Translation Logic:**\n• Analyzed cultural context and local naming conventions\n• Considered semantic meaning beyond literal word-for-word translation\n• Evaluated regional dialects and linguistic preferences\n• Cross-referenced with authoritative cultural sources\n\n**Reasoning Process:**\n• Primary consideration: Maintains original cultural significance\n• Secondary factor: Natural flow in target language\n• Tertiary check: Tourism industry standard terminology\n• Final validation: Local speaker acceptance patterns\n\n**AI Confidence Assessment:**\n• Translation accuracy: High confidence based on contextual analysis\n• Cultural appropriateness: Verified through multi-source validation\n• Local usage compatibility: Confirmed through regional language patterns\n• Recommendation strength: Strong - aligns with established conventions`,
       
-      openai: `**OpenAI GPT Translation Analysis**\n\nFor "${poiName}" → ${language}:\n\n**GPT Processing Method:**\n• Multilingual context understanding from training data\n• Geographic and cultural knowledge integration\n• Natural language generation optimized for clarity\n• Cross-linguistic pattern recognition\n\n**Translation Factors:**\n• Literal meaning preservation: Balanced with natural expression\n• Cultural context: Adapted for target language speakers\n• Usage patterns: Based on extensive multilingual training\n• Readability: Optimized for native speaker comprehension\n\n**Quality Indicators:**\n• Model confidence: 94% (Very High)\n• Cross-validation score: Consistent with similar POI translations\n• Linguistic appropriateness: Verified against training data patterns\n• User acceptance prediction: High probability of positive reception`
+      openai: `**OpenAI GPT Translation Analysis**\n\nFor "${poiName}" → ${language}:\n\n**GPT Processing Method:**\n• Multilingual context understanding from training data\n• Geographic and cultural knowledge integration\n• Natural language generation optimized for clarity\n• Cross-linguistic pattern recognition\n\n**Translation Factors:**\n• Literal meaning preservation: Balanced with natural expression\n• Cultural context: Adapted for target language speakers\n• Usage patterns: Based on extensive multilingual training\n• Readability: Optimized for native speaker comprehension\n\n**Quality Indicators:**\n• Model confidence: 94% (Very High)\n• Cross-validation score: Consistent with similar POI translations\n• Linguistic appropriateness: Verified against training data patterns\n• User acceptance prediction: High probability of positive reception`,
+      // Add OpenRouter model reasoning
+      ...openrouterResults.reasoning,
     };
 
     const response = {
@@ -1323,16 +1521,29 @@ export async function POST(request: NextRequest) {
         googlePlaceId,
         language,
         requestTimestamp: new Date().toISOString(),
-        sources: ['Google SERP Summary', 'Google Maps', 'Perplexity AI', 'OpenAI']
+        sources: [
+          'Google SERP Summary',
+          'Google Maps',
+          'Perplexity AI',
+          'OpenAI',
+          'OpenRouter GPT-4 Turbo',
+          'OpenRouter Claude Sonnet',
+          'OpenRouter Gemini Flash',
+          'OpenRouter GPT-4o Mini',
+          'OpenRouter Sonar Pro',
+        ]
       }
     };
+
+    const totalTranslations = Object.keys(translations).length;
+    const successfulTranslations = Object.values(translations).filter(t => t !== 'Translation failed').length;
 
     console.log('-'.repeat(80));
     console.log('✅ TRANSLATION REQUEST COMPLETED');
     console.log(`   POI: ${poiName}`);
     console.log(`   Language: ${language}`);
     console.log(`   Total time: ${totalTime}ms`);
-    console.log(`   Successful translations: ${Object.values(translations).filter(t => t !== 'Translation failed').length}/4`);
+    console.log(`   Successful translations: ${successfulTranslations}/${totalTranslations}`);
     console.log('='.repeat(80));
     console.log('');
 

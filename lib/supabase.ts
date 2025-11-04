@@ -39,7 +39,9 @@ export interface Translation {
 export interface TranslationSource {
   id: string;
   translation_id: string;
-  source_type: 'serp' | 'google_maps' | 'perplexity' | 'openai';
+  source_type: 'serp' | 'google_maps' | 'perplexity' | 'openai' |
+    'openrouter_gpt4_turbo' | 'openrouter_claude_sonnet' |
+    'openrouter_gemini_flash' | 'openrouter_gpt5_nano' | 'openrouter_sonar_pro';
   recommended_name?: string;
   reasoning?: string;
   confidence_score?: number;

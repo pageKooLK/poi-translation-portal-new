@@ -11,6 +11,9 @@
     },
     "app/api/openai/route.ts": {
       "maxDuration": 30
+    },
+    "app/api/openrouter/route.ts": {
+      "maxDuration": 30
     }
   }
 }
