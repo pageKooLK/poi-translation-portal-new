@@ -1,5 +1,6 @@
 import React from 'react';
 import './globals.css';
+import { AuthProvider } from './providers/auth-provider';
 
 export const metadata = {
   title: 'POI Translation Portal',
@@ -14,7 +15,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen bg-background font-sans antialiased">
-        {children}
+        <AuthProvider>
+          {children}
+        </AuthProvider>
       </body>
     </html>
   )

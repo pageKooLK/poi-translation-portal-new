@@ -12,10 +12,11 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
-import { 
-  BarChart3, 
-  Plus, 
-  FileText, 
+import { Navbar } from "@/components/navbar"
+import {
+  BarChart3,
+  Plus,
+  FileText,
   CheckSquare,
   Globe,
   TrendingUp,
@@ -2177,24 +2178,12 @@ export default function Home() {
           </div>
         </div>
       )}
-      <div className="container mx-auto py-8">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="flex items-center justify-center h-12 w-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl shadow-lg">
-              <Globe className="h-6 w-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-4xl font-bold bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent">
-                POI Translation Portal
-              </h1>
-              <p className="text-slate-600 mt-1">
-                AI-powered multi-language POI translation management system
-              </p>
-            </div>
-          </div>
-        </div>
 
+      {/* Navbar - At the very top */}
+      <Navbar />
+
+      {/* Main Content */}
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Tabs Navigation */}
         <Tabs value={currentTab} onValueChange={setCurrentTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-5 bg-slate-100">
