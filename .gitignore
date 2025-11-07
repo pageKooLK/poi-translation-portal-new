@@ -34,3 +34,21 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# test files
+test-*.json
+test-*.sh
+test-*.js
+*.test.js
+analysis-*.txt
+analyze-*.py
+check-*.js
+check-*.sql
+server.log
+server.pid
+translation-test-*.json
+
+# debug API routes (for local testing only)
+app/api/check-session/
+app/api/debug-auth/
+app/api/test-login/
