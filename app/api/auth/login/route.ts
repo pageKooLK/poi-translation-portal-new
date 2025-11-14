@@ -4,13 +4,23 @@ import { createServerClient } from '@supabase/ssr';
 
 export async function POST(request: Request) {
   try {
+    // First check if environment variables are present
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+      console.error('Missing Supabase environment variables');
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication service is not configured. Please check server configuration.',
+        details: 'Missing required environment variables'
+      }, { status: 503 });
+    }
+
     const { email, password } = await request.json();
     const cookieStore = cookies();
 
     // Create Supabase client with server-side cookie handling
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       {
         cookies: {
           get(name: string) {

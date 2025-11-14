@@ -1,5 +1,17 @@
 # Zeabur Deployment Guide
 
+## Health Check Endpoint
+
+After deployment, verify your setup by visiting:
+```
+https://poitranslation.zeabur.app/api/health
+```
+
+This endpoint will show:
+- Whether environment variables are configured
+- Supabase connection status
+- Any configuration errors
+
 ## Required Environment Variables
 
 You need to set the following environment variables in your Zeabur deployment:
@@ -62,10 +74,32 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 ## Troubleshooting
 
 ### 500 Error on Login
-This usually means environment variables are missing. Check:
-1. NEXT_PUBLIC_SUPABASE_URL is set correctly
-2. NEXT_PUBLIC_SUPABASE_ANON_KEY is set correctly
-3. Both values match your Supabase project
+This usually means environment variables are missing.
+
+**Step 1: Check Health Endpoint**
+Visit: https://poitranslation.zeabur.app/api/health
+
+If you see:
+- `"hasUrl": false` - NEXT_PUBLIC_SUPABASE_URL is missing
+- `"hasAnonKey": false` - NEXT_PUBLIC_SUPABASE_ANON_KEY is missing
+- `"status": "missing_config"` - Environment variables need to be added
+
+**Step 2: Add Environment Variables in Zeabur**
+1. Go to Zeabur Dashboard: https://dash.zeabur.com
+2. Select your project
+3. Click on "poi-translation-portal" service
+4. Go to "Variables" tab
+5. Add these variables:
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=https://przxwihootxbqxmlpwfe.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=[Your anon key from Supabase]
+   ```
+6. Click "Save"
+7. Wait for automatic redeployment (or manually redeploy)
+
+**Step 3: Verify After Deployment**
+1. Visit health check again: https://poitranslation.zeabur.app/api/health
+2. Should show `"status": "healthy"` and `"supabase": {"status": "connected"}`
 
 ### Cannot Connect to Supabase
 1. Verify your Supabase project is active
