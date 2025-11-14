@@ -74,7 +74,7 @@ export function Navbar() {
               </>
             ) : (
               // Show nothing when not logged in (middleware will redirect)
-              <div className="text-sm text-gray-500">未登入</div>
+              null
             )}
           </div>
         </div>

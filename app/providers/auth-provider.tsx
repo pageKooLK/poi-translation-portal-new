@@ -2,7 +2,6 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { User } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 
 interface AuthContextType {
@@ -26,8 +25,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshUser = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
+      const response = await fetch('/api/auth/session');
+      const data = await response.json();
+
+      if (data.authenticated && data.user) {
+        setUser(data.user as User);
+      } else {
+        setUser(null);
+      }
     } catch (error) {
       console.error('Error refreshing user:', error);
       setUser(null);
@@ -46,10 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(data.user as User);
         } else {
           setUser(null);
-          // If not authenticated, redirect to login
-          if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-            router.push('/login');
-          }
+          // Don't redirect here - let the middleware handle it
         }
       } catch (error) {
         console.error('Error checking user session:', error);
@@ -61,17 +63,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     checkUser();
 
-    // Listen for changes on auth state
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUser(session.user);
-      } else {
-        setUser(null);
-      }
-      setLoading(false);
-    });
+    // Periodically check session status (every 30 seconds)
+    const interval = setInterval(() => {
+      checkUser();
+    }, 30000);
 
-    return () => subscription.unsubscribe();
+    return () => clearInterval(interval);
   }, [router]);
 
   const signOut = async () => {

@@ -6,6 +6,16 @@ export async function GET() {
   try {
     const cookieStore = cookies();
 
+    // Check if we have the auth token cookie
+    const authToken = cookieStore.get('sb-przxwihootxbqxmlpwfe-auth-token');
+
+    if (!authToken) {
+      return NextResponse.json({
+        authenticated: false,
+        user: null,
+      });
+    }
+
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
